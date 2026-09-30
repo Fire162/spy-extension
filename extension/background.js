@@ -19,7 +19,16 @@ let sessionState = {
   tabTitle: '',
   tabUrl: '',
   pendingRequests: [], // array of { clientId, deviceInfo, timestamp }
-  connectedClients: []  // array of { clientId, deviceInfo, canControl, connectedAt }
+  connectedClients: [], // array of { clientId, deviceInfo, canControl, connectedAt }
+  disconnectedClients: [], // array of { clientId, deviceInfo, disconnectedAt, reason }
+  portionSettings: {
+    enabled: false,
+    preset: 'topHalf',
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 50
+  }
 };
 
 // Check and maintain offscreen document
@@ -334,25 +343,64 @@ async function handleInputEvent(input) {
   }
 }
 
+// Fully teardown host session, notify offscreen to inform guests, and detach debugger
+async function stopHostSession(reason = 'completed') {
+  if (!sessionState.active) return;
+
+  await saveSessionToHistory(sessionState, reason);
+
+  if (sessionState.tabId) {
+    try {
+      await chrome.debugger.sendCommand({ tabId: sessionState.tabId }, 'Runtime.evaluate', {
+        expression: `(() => { const el = document.getElementById('__spy_laser__'); if (el) el.remove(); })()`
+      }).catch(() => {});
+    } catch (e) {}
+    await detachDebugger(sessionState.tabId);
+  }
+
+  // Instruct offscreen document to broadcast host-tab-closed and tear down WebRTC peers
+  try {
+    chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'STOP_SESSION',
+      payload: { reason: reason === 'tab-closed' ? 'Host closed the shared tab' : 'Host ended the session' }
+    });
+  } catch (e) {}
+
+  await closeOffscreenDocument();
+
+  sessionState.active = false;
+  sessionState.tabId = null;
+  sessionState.startTime = null;
+  sessionState.pendingRequests = [];
+  sessionState.connectedClients = [];
+  updateExtensionBadge();
+
+  // Broadcast termination to open popup if active
+  chrome.runtime.sendMessage({
+    type: 'SESSION_TERMINATED',
+    reason
+  }).catch(() => {});
+}
+
 // Main message listener
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
     case 'START_HOST_SESSION': {
       (async () => {
         try {
-          const { tabId, roomId, pin, serverUrl } = message.payload;
+          const { tabId, roomId, pin, serverUrl, portionSettings } = message.payload;
 
           // Full teardown of any previous session first
           if (sessionState.active) {
-            await saveSessionToHistory(sessionState, 'terminated');
-            if (sessionState.tabId) {
-              await detachDebugger(sessionState.tabId);
-            }
-            chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_SESSION' });
-            await closeOffscreenDocument();
+            await stopHostSession('restarted');
           }
 
           const tab = await chrome.tabs.get(tabId);
+
+          if (portionSettings) {
+            sessionState.portionSettings = portionSettings;
+          }
 
           sessionState.tabId = tabId;
           sessionState.tabTitle = tab.title || 'Untitled Tab';
@@ -363,6 +411,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sessionState.startTime = Date.now();
           sessionState.pendingRequests = [];
           sessionState.connectedClients = [];
+          sessionState.disconnectedClients = [];
           sessionState.active = true;
 
           // 1. Get tab capture stream ID
@@ -375,11 +424,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await attachDebugger(tabId);
           await refreshTabDimensions(tabId);
 
-          // 4. Instruct offscreen document to initiate session
+          // 4. Instruct offscreen document to initiate session with portion settings
           chrome.runtime.sendMessage({
             target: 'offscreen',
             type: 'START_SESSION',
-            payload: { streamId, roomId, pin }
+            payload: {
+              streamId,
+              roomId,
+              pin,
+              portionSettings: sessionState.portionSettings
+            }
           });
 
           updateExtensionBadge();
@@ -506,20 +560,64 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     }
 
+    case 'UPDATE_PORTION_SETTINGS': {
+      sessionState.portionSettings = { ...sessionState.portionSettings, ...message.payload };
+      chrome.runtime.sendMessage({
+        target: 'offscreen',
+        type: 'UPDATE_PORTION_SETTINGS',
+        payload: sessionState.portionSettings
+      });
+      chrome.runtime.sendMessage({
+        type: 'PORTION_SETTINGS_UPDATED',
+        portionSettings: sessionState.portionSettings
+      }).catch(() => {});
+      sendResponse({ success: true });
+      return true;
+    }
+
     case 'CLIENT_DISCONNECTED': {
+      const client = sessionState.connectedClients.find(c => c.clientId === message.clientId);
+      const devInfo = (client && client.deviceInfo) || message.deviceInfo || 'Remote Device';
       sessionState.connectedClients = sessionState.connectedClients.filter(c => c.clientId !== message.clientId);
       sessionState.pendingRequests = sessionState.pendingRequests.filter(r => r.clientId !== message.clientId);
+
+      // Track in disconnectedClients roster so host is always aware of inactive sessions
+      sessionState.disconnectedClients.unshift({
+        clientId: message.clientId,
+        deviceInfo: devInfo,
+        disconnectedAt: Date.now(),
+        reason: message.reason || 'Left session'
+      });
+      if (sessionState.disconnectedClients.length > 10) {
+        sessionState.disconnectedClients.pop();
+      }
+
       try {
         chrome.notifications.clear(`perm-request-${message.clientId}`);
+        chrome.notifications.create(`client-disconnect-${message.clientId}`, {
+          type: 'basic',
+          iconUrl: 'icons/icon128.png',
+          title: 'Guest Disconnected',
+          message: `${devInfo} has left the session (${message.reason || 'closed tab'}).`,
+          priority: 1
+        });
       } catch (e) {}
+
       updateExtensionBadge();
       chrome.runtime.sendMessage({
         type: 'PENDING_REQUESTS_UPDATED',
         requests: sessionState.pendingRequests
       }).catch(() => {});
       chrome.runtime.sendMessage({
+        type: 'CLIENTS_UPDATED',
+        clients: sessionState.connectedClients
+      }).catch(() => {});
+      chrome.runtime.sendMessage({
         type: 'CLIENT_DISCONNECTED',
-        clientId: message.clientId
+        clientId: message.clientId,
+        deviceInfo: devInfo,
+        disconnectedClients: sessionState.disconnectedClients,
+        reason: message.reason
       }).catch(() => {});
       break;
     }
@@ -531,30 +629,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'STOP_HOST_SESSION': {
       (async () => {
-        if (sessionState.active) {
-          await saveSessionToHistory(sessionState, 'completed');
-        }
-
-        if (sessionState.tabId) {
-          try {
-            await chrome.debugger.sendCommand({ tabId: sessionState.tabId }, 'Runtime.evaluate', {
-              expression: `(() => { const el = document.getElementById('__spy_laser__'); if (el) el.remove(); })()`
-            }).catch(() => {});
-          } catch (e) {}
-          await detachDebugger(sessionState.tabId);
-        }
-        chrome.runtime.sendMessage({
-          target: 'offscreen',
-          type: 'STOP_SESSION'
-        });
-        await closeOffscreenDocument();
-
-        sessionState.active = false;
-        sessionState.tabId = null;
-        sessionState.startTime = null;
-        sessionState.pendingRequests = [];
-        sessionState.connectedClients = [];
-        updateExtensionBadge();
+        await stopHostSession('user-stopped');
         sendResponse({ success: true });
       })();
       return true;
@@ -562,16 +637,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// Detach debugger if the user manually closes the tab
+// Immediately teardown session and notify guests if host closes the shared tab
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (sessionState.tabId === tabId) {
-    chrome.runtime.sendMessage({ type: 'STOP_HOST_SESSION' });
+    stopHostSession('tab-closed');
   }
 });
 
-// Clean up debugger if detached natively by Chrome
+// Clean up session if debugger detached natively by Chrome
 chrome.debugger.onDetach.addListener((source, reason) => {
   if (sessionState.tabId === source.tabId) {
     console.log('Debugger was detached natively:', reason);
+    stopHostSession('debugger-detached');
   }
 });
