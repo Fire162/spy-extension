@@ -24,6 +24,10 @@
   const modeText = document.getElementById('modeText');
   const screenFitBtn = document.getElementById('screenFitBtn');
   const screenFitIcon = document.getElementById('screenFitIcon');
+  const screenFitText = document.getElementById('screenFitText');
+  const screenModePill = document.getElementById('screenModePill');
+  const screenModePillStatus = document.getElementById('screenModePillStatus');
+  const floatingFitBtn = document.getElementById('floatingFitBtn');
   const fullscreenBtn = document.getElementById('fullscreenBtn');
   const disconnectBtn = document.getElementById('disconnectBtn');
   const reconnectBtn = document.getElementById('reconnectBtn');
@@ -220,6 +224,8 @@
         remoteVideo.srcObject = remoteStream;
         updateStatus('connected', 'Live Connected');
         latencyBadge.style.display = 'flex';
+        syncScreenModeUI();
+        updatePortionDisplay();
 
         // Apply low-latency hints to eliminate browser jitter-buffering
         try {
@@ -312,6 +318,8 @@
           disconnectBtn.style.display = 'inline-flex';
           fullscreenBtn.style.display = 'inline-flex';
           if (screenFitBtn) screenFitBtn.style.display = 'inline-flex';
+          if (screenModePill) screenModePill.style.display = 'flex';
+          syncScreenModeUI();
 
           activePortion = (!canControl && data.portionEnabled) ? data.portion : null;
           updatePortionDisplay();
@@ -346,6 +354,7 @@
       case 'role-update':
         canControl = !!data.canControl;
         activePortion = (!canControl && data.portionEnabled) ? data.portion : null;
+        syncScreenModeUI();
         updatePortionDisplay();
 
         if (canControl) {
@@ -368,6 +377,7 @@
 
       case 'portion-update':
         activePortion = (!canControl && data.portionEnabled) ? data.portion : null;
+        syncScreenModeUI();
         updatePortionDisplay();
         if (activePortion) {
           interactionNotice.textContent = '🔒 Viewing Host Selected Portion (View-Only)';
@@ -440,12 +450,24 @@
     let offsetX = 0;
     let offsetY = 0;
 
-    if (elementRatio > videoRatio) {
-      renderWidth = rect.height * videoRatio;
-      offsetX = (rect.width - renderWidth) / 2;
+    if (screenScaleMode === 'fill') {
+      if (elementRatio > videoRatio) {
+        renderWidth = rect.width;
+        renderHeight = rect.width / videoRatio;
+        offsetY = (rect.height - renderHeight) / 2;
+      } else {
+        renderHeight = rect.height;
+        renderWidth = rect.height * videoRatio;
+        offsetX = (rect.width - renderWidth) / 2;
+      }
     } else {
-      renderHeight = rect.width / videoRatio;
-      offsetY = (rect.height - renderHeight) / 2;
+      if (elementRatio > videoRatio) {
+        renderWidth = rect.height * videoRatio;
+        offsetX = (rect.width - renderWidth) / 2;
+      } else {
+        renderHeight = rect.width / videoRatio;
+        offsetY = (rect.height - renderHeight) / 2;
+      }
     }
 
     const clickX = adjustedX - rect.left - offsetX;
@@ -535,6 +557,38 @@
     });
   }, { passive: false });
 
+  // --- Screen Scale & Aspect Ratio Controls ---
+  function syncScreenModeUI() {
+    const isFill = (screenScaleMode === 'fill');
+    if (screenFitIcon) screenFitIcon.textContent = isFill ? '🔲' : '📐';
+    if (screenFitText) screenFitText.textContent = isFill ? 'Fill Screen' : 'Fit Ratio';
+    if (screenFitBtn) {
+      screenFitBtn.title = isFill ? 'Screen Mode: Fill Screen (No black bars, edge-to-edge)' : 'Screen Mode: Fit Ratio (Original aspect ratio)';
+      if (isFill) {
+        screenFitBtn.classList.remove('is-fit');
+      } else {
+        screenFitBtn.classList.add('is-fit');
+      }
+    }
+    if (screenModePillStatus) {
+      if (activePortion && !canControl) {
+        screenModePillStatus.textContent = isFill ? '🔒 Portion: Fill Screen' : '🔒 Portion: Fit Ratio';
+      } else {
+        screenModePillStatus.textContent = isFill ? '🔲 Fill Screen (Zero Bars)' : '📐 Fit Ratio (Original)';
+      }
+      screenModePillStatus.style.color = isFill ? '#38bdf8' : '#fbbf24';
+    }
+    if (floatingFitBtn) {
+      floatingFitBtn.textContent = isFill ? 'Fit Ratio 📐' : 'Fill Screen 🔲';
+    }
+  }
+
+  function toggleScreenScaleMode() {
+    screenScaleMode = screenScaleMode === 'fill' ? 'fit' : 'fill';
+    syncScreenModeUI();
+    updatePortionDisplay();
+  }
+
   // --- Portion Crop Viewport Display (View-Only Mode) ---
   function updatePortionDisplay() {
     if (!remoteVideo) return;
@@ -559,15 +613,15 @@
         remoteVideo.style.top = '0';
         remoteVideo.style.clipPath = '';
       } else {
-        streamWrapper.style.width = '';
-        streamWrapper.style.height = '';
+        streamWrapper.style.width = '100%';
+        streamWrapper.style.height = '100%';
         streamWrapper.style.maxWidth = '100%';
         streamWrapper.style.maxHeight = '100%';
         streamWrapper.style.overflow = 'hidden';
 
         remoteVideo.style.position = 'relative';
-        remoteVideo.style.width = '';
-        remoteVideo.style.height = '';
+        remoteVideo.style.width = '100%';
+        remoteVideo.style.height = '100%';
         remoteVideo.style.maxWidth = '100%';
         remoteVideo.style.maxHeight = '100%';
         remoteVideo.style.objectFit = 'contain';
@@ -582,6 +636,7 @@
       } else {
         remoteVideo.style.transform = `scale(${currentZoom}) translate(${panX}px, ${panY}px)`;
       }
+      syncScreenModeUI();
       return;
     }
 
@@ -644,6 +699,7 @@
       remoteVideo.style.clipPath = `inset(${top}% ${right}% ${bottom}% ${left}%)`;
       remoteVideo.style.transition = 'transform 0.25s ease-out, clip-path 0.25s ease-out';
     }
+    syncScreenModeUI();
   }
 
   // --- Pinch-to-Zoom & Pan Logic ---
@@ -1032,6 +1088,7 @@
     disconnectBtn.style.display = 'none';
     fullscreenBtn.style.display = 'none';
     if (screenFitBtn) screenFitBtn.style.display = 'none';
+    if (screenModePill) screenModePill.style.display = 'none';
     audioToggleBtn.style.display = 'none';
     audioNotice.style.display = 'none';
     mobileDock.style.display = 'none';
@@ -1093,15 +1150,21 @@
   });
 
   if (screenFitBtn) {
-    screenFitBtn.addEventListener('click', () => {
-      screenScaleMode = screenScaleMode === 'fill' ? 'fit' : 'fill';
-      if (screenFitIcon) {
-        screenFitIcon.textContent = screenScaleMode === 'fill' ? '🔲' : '📐';
-      }
-      screenFitBtn.title = screenScaleMode === 'fill' ? 'Screen Mode: Fill (No Black Bars)' : 'Screen Mode: Fit (Maintain Ratio)';
-      updatePortionDisplay();
-    });
+    screenFitBtn.addEventListener('click', toggleScreenScaleMode);
   }
+
+  if (floatingFitBtn) {
+    floatingFitBtn.addEventListener('click', toggleScreenScaleMode);
+  }
+
+  remoteVideo.addEventListener('loadedmetadata', () => {
+    syncScreenModeUI();
+    updatePortionDisplay();
+  });
+
+  window.addEventListener('resize', () => {
+    updatePortionDisplay();
+  });
 
   fullscreenBtn.addEventListener('click', () => {
     if (!document.fullscreenElement) {

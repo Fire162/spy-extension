@@ -174,6 +174,8 @@ body {
 
 .stream-wrapper {
   position: relative;
+  width: 100%;
+  height: 100%;
   max-width: 100%;
   max-height: 100%;
   display: flex;
@@ -185,15 +187,15 @@ body {
   -webkit-touch-callout: none;
   user-select: none;
   overflow: hidden;
-  border-radius: 4px;
+  border-radius: 0;
 }
 
 #remoteVideo {
+  width: 100%;
+  height: 100%;
   max-width: 100%;
   max-height: 100%;
-  object-fit: contain;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
-  border: 1px solid #1f2937;
+  object-fit: cover;
   user-select: none;
   touch-action: none;
   -webkit-user-drag: none;
@@ -689,6 +691,104 @@ body {
 
 .btn-zoom-reset:hover {
   opacity: 0.85;
+}
+
+/* Screen Mode & Fit Controls */
+.btn-screen-fit {
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #38bdf8;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.btn-screen-fit:hover {
+  background: rgba(56, 189, 248, 0.28);
+  border-color: #38bdf8;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
+}
+
+.btn-screen-fit.is-fit {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fbbf24;
+}
+
+.btn-screen-fit.is-fit:hover {
+  background: rgba(245, 158, 11, 0.25);
+  border-color: #fbbf24;
+}
+
+/* Screen Fit / Aspect Ratio Floating Pill in Viewport */
+.screen-mode-pill {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 24px;
+  padding: 6px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 40;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.7);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #f3f4f6;
+  pointer-events: auto;
+  user-select: none;
+  animation: fadeInPill 0.3s ease-out;
+}
+
+@keyframes fadeInPill {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.screen-mode-pill:hover {
+  border-color: #38bdf8;
+  box-shadow: 0 8px 30px rgba(56, 189, 248, 0.25);
+}
+
+.screen-mode-pill .mode-pill-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: #38bdf8;
+  white-space: nowrap;
+}
+
+.btn-pill-action {
+  background: rgba(56, 189, 248, 0.2);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.btn-pill-action:hover {
+  background: #38bdf8;
+  color: #030712;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
 }
 
 /* Responsive Media Queries */
