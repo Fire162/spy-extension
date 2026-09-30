@@ -28,6 +28,7 @@
   const remoteVideo = document.getElementById('remoteVideo');
   const streamWrapper = document.getElementById('streamWrapper');
   const interactionNotice = document.getElementById('interactionNotice');
+  const portionBadge = document.getElementById('portionBadge');
 
   // Audio Elements
   const audioToggleBtn = document.getElementById('audioToggleBtn');
@@ -286,6 +287,12 @@
           disconnectBtn.style.display = 'inline-flex';
           fullscreenBtn.style.display = 'inline-flex';
 
+          if (data.portionEnabled) {
+            if (portionBadge) portionBadge.style.display = 'inline-flex';
+          } else {
+            if (portionBadge) portionBadge.style.display = 'none';
+          }
+
           if (canControl) {
             modeBadge.className = 'mode-badge control';
             modeText.textContent = 'FULL CONTROL';
@@ -298,7 +305,7 @@
           } else {
             modeBadge.className = 'mode-badge';
             modeText.textContent = 'VIEW ONLY';
-            interactionNotice.textContent = '👁️ Host granted View-Only access';
+            interactionNotice.textContent = data.portionEnabled ? '🔒 Host shared a specific screen portion (View-Only)' : '👁️ Host granted View-Only access';
             if (navBarToggleBtn) navBarToggleBtn.style.display = 'none';
             if (navToolbar) navToolbar.style.display = 'none';
           }
@@ -315,6 +322,12 @@
 
       case 'role-update':
         canControl = !!data.canControl;
+        if (data.portionEnabled) {
+          if (portionBadge) portionBadge.style.display = 'inline-flex';
+        } else {
+          if (portionBadge) portionBadge.style.display = 'none';
+        }
+
         if (canControl) {
           modeBadge.className = 'mode-badge control';
           modeText.textContent = 'FULL CONTROL';
@@ -327,10 +340,23 @@
         } else {
           modeBadge.className = 'mode-badge';
           modeText.textContent = 'VIEW ONLY';
-          interactionNotice.textContent = '👁️ Host changed your access to View-Only';
+          interactionNotice.textContent = data.portionEnabled ? '🔒 Host shared a specific screen portion (View-Only)' : '👁️ Host changed your access to View-Only';
           if (navBarToggleBtn) navBarToggleBtn.style.display = 'none';
           if (navToolbar) navToolbar.style.display = 'none';
         }
+        break;
+
+      case 'portion-update':
+        if (data.portionEnabled) {
+          if (portionBadge) portionBadge.style.display = 'inline-flex';
+          interactionNotice.textContent = '🔒 Host updated the shared screen portion (View-Only)';
+        } else {
+          if (portionBadge) portionBadge.style.display = 'none';
+        }
+        break;
+
+      case 'host-tab-closed':
+        handleSessionEnded(data.reason || 'Host closed the shared tab. Session has ended.');
         break;
 
       case 'session-ended':
@@ -869,6 +895,7 @@
       navToolbar.classList.remove('collapsed');
     }
     if (navBarToggleBtn) navBarToggleBtn.style.display = 'none';
+    if (portionBadge) portionBadge.style.display = 'none';
     resetZoom();
     if (remoteVideo.srcObject) {
       remoteVideo.srcObject.getTracks().forEach(t => t.stop());
@@ -917,6 +944,23 @@
       streamWrapper.requestFullscreen().catch(() => {});
     } else {
       document.exitFullscreen().catch(() => {});
+    }
+  });
+
+  // Instant disconnection awareness when controller closes the window or tab
+  window.addEventListener('beforeunload', () => {
+    if (conn && conn.open) {
+      try {
+        conn.send({ type: 'session-ended', reason: 'Controller closed tab' });
+      } catch (e) {}
+    }
+  });
+
+  window.addEventListener('pagehide', () => {
+    if (conn && conn.open) {
+      try {
+        conn.send({ type: 'session-ended', reason: 'Controller navigated away' });
+      } catch (e) {}
     }
   });
 

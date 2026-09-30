@@ -24,6 +24,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   const startSessionBtn = document.getElementById('startSessionBtn');
   const stopSessionBtn = document.getElementById('stopSessionBtn');
 
+  // Portion Sharing Controls
+  const portionToggle = document.getElementById('portionToggle');
+  const portionControls = document.getElementById('portionControls');
+  const portionPresetSelect = document.getElementById('portionPresetSelect');
+  const portionX = document.getElementById('portionX');
+  const portionY = document.getElementById('portionY');
+  const portionW = document.getElementById('portionW');
+  const portionH = document.getElementById('portionH');
+  const portionPreviewBox = document.getElementById('portionPreviewBox');
+  const activePortionToggle = document.getElementById('activePortionToggle');
+
   // Room Details & QR
   const sessionTimer = document.getElementById('sessionTimer');
   const displayRoomId = document.getElementById('displayRoomId');
@@ -40,6 +51,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const connectedCountBadge = document.getElementById('connectedCountBadge');
   const devicesList = document.getElementById('devicesList');
   const noDevicesBanner = document.getElementById('noDevicesBanner');
+
+  const inactiveSection = document.getElementById('inactiveSection');
+  const inactiveCountBadge = document.getElementById('inactiveCountBadge');
+  const inactiveList = document.getElementById('inactiveList');
 
   // History Elements
   const clearHistoryBtn = document.getElementById('clearHistoryBtn');
@@ -70,6 +85,96 @@ document.addEventListener('DOMContentLoaded', async () => {
     serverSettingsBody.style.display = isHidden ? 'flex' : 'none';
     serverSettingsHeader.querySelector('.arrow').textContent = isHidden ? '▴' : '▾';
   });
+
+  // --- Portion Controls Engine ---
+  function updatePortionPreview() {
+    if (!portionPreviewBox || !portionX || !portionY || !portionW || !portionH) return;
+    const x = Math.max(0, Math.min(90, parseInt(portionX.value) || 0));
+    const y = Math.max(0, Math.min(90, parseInt(portionY.value) || 0));
+    const w = Math.max(10, Math.min(100 - x, parseInt(portionW.value) || 100));
+    const h = Math.max(10, Math.min(100 - y, parseInt(portionH.value) || 50));
+    portionPreviewBox.style.left = `${x}%`;
+    portionPreviewBox.style.top = `${y}%`;
+    portionPreviewBox.style.width = `${w}%`;
+    portionPreviewBox.style.height = `${h}%`;
+  }
+
+  function getPortionSettings() {
+    return {
+      enabled: !!(portionToggle && portionToggle.checked),
+      preset: portionPresetSelect ? portionPresetSelect.value : 'topHalf',
+      x: parseInt(portionX ? portionX.value : 0) || 0,
+      y: parseInt(portionY ? portionY.value : 0) || 0,
+      width: parseInt(portionW ? portionW.value : 100) || 100,
+      height: parseInt(portionH ? portionH.value : 50) || 50
+    };
+  }
+
+  function applyPortionSettings(settings) {
+    if (!settings) return;
+    if (portionToggle) portionToggle.checked = !!settings.enabled;
+    if (activePortionToggle) activePortionToggle.checked = !!settings.enabled;
+    if (portionControls) portionControls.style.display = settings.enabled ? 'flex' : 'none';
+    if (portionPresetSelect && settings.preset) portionPresetSelect.value = settings.preset;
+    if (portionX && settings.x !== undefined) portionX.value = settings.x;
+    if (portionY && settings.y !== undefined) portionY.value = settings.y;
+    if (portionW && settings.width !== undefined) portionW.value = settings.width;
+    if (portionH && settings.height !== undefined) portionH.value = settings.height;
+    updatePortionPreview();
+  }
+
+  function sendPortionUpdate() {
+    const settings = getPortionSettings();
+    chrome.runtime.sendMessage({
+      type: 'UPDATE_PORTION_SETTINGS',
+      payload: settings
+    });
+  }
+
+  if (portionToggle) {
+    portionToggle.addEventListener('change', () => {
+      if (portionControls) portionControls.style.display = portionToggle.checked ? 'flex' : 'none';
+      if (activePortionToggle) activePortionToggle.checked = portionToggle.checked;
+      sendPortionUpdate();
+    });
+  }
+
+  if (activePortionToggle) {
+    activePortionToggle.addEventListener('change', () => {
+      if (portionToggle) portionToggle.checked = activePortionToggle.checked;
+      if (portionControls) portionControls.style.display = activePortionToggle.checked ? 'flex' : 'none';
+      sendPortionUpdate();
+    });
+  }
+
+  if (portionPresetSelect) {
+    portionPresetSelect.addEventListener('change', () => {
+      const val = portionPresetSelect.value;
+      if (val === 'topHalf') {
+        portionX.value = 0; portionY.value = 0; portionW.value = 100; portionH.value = 50;
+      } else if (val === 'bottomHalf') {
+        portionX.value = 0; portionY.value = 50; portionW.value = 100; portionH.value = 50;
+      } else if (val === 'center') {
+        portionX.value = 25; portionY.value = 25; portionW.value = 50; portionH.value = 50;
+      } else if (val === 'mainContent') {
+        portionX.value = 0; portionY.value = 0; portionW.value = 100; portionH.value = 70;
+      }
+      updatePortionPreview();
+      sendPortionUpdate();
+    });
+  }
+
+  [portionX, portionY, portionW, portionH].forEach(input => {
+    if (input) {
+      input.addEventListener('input', () => {
+        if (portionPresetSelect) portionPresetSelect.value = 'custom';
+        updatePortionPreview();
+        sendPortionUpdate();
+      });
+    }
+  });
+
+  updatePortionPreview();
 
   // 1. Get current active tab
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -104,6 +209,38 @@ document.addEventListener('DOMContentLoaded', async () => {
     timerInterval = setInterval(update, 1000);
   }
 
+  function renderInactiveDevices(disconnectedClients) {
+    if (!inactiveList) return;
+    inactiveList.innerHTML = '';
+    const list = disconnectedClients || [];
+    if (inactiveCountBadge) inactiveCountBadge.textContent = list.length;
+
+    if (list.length === 0) {
+      if (inactiveSection) inactiveSection.style.display = 'none';
+      return;
+    }
+
+    if (inactiveSection) inactiveSection.style.display = 'flex';
+
+    list.forEach(item => {
+      const card = document.createElement('div');
+      card.className = 'inactive-card';
+
+      const name = document.createElement('span');
+      name.className = 'inactive-name';
+      name.textContent = item.deviceInfo || 'Remote Client';
+
+      const badge = document.createElement('span');
+      badge.className = 'inactive-badge';
+      const timeStr = item.disconnectedAt ? new Date(item.disconnectedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      badge.textContent = `🔴 Left (${timeStr || item.reason || 'inactive'})`;
+
+      card.appendChild(name);
+      card.appendChild(badge);
+      inactiveList.appendChild(card);
+    });
+  }
+
   function renderState(state) {
     if (state.active) {
       setupView.style.display = 'none';
@@ -112,14 +249,29 @@ document.addEventListener('DOMContentLoaded', async () => {
       activeView.style.gap = '12px';
 
       const clientCount = state.connectedClients ? state.connectedClients.length : 0;
-      globalStatusPill.textContent = clientCount > 0 ? `${clientCount} STREAMING` : 'WAITING FOR GUEST';
-      globalStatusPill.className = 'status-pill active';
+      const inactiveCount = state.disconnectedClients ? state.disconnectedClients.length : 0;
+
+      if (clientCount > 0) {
+        globalStatusPill.textContent = `${clientCount} STREAMING`;
+        globalStatusPill.className = 'status-pill active';
+      } else if (inactiveCount > 0) {
+        globalStatusPill.textContent = 'ALL GUESTS INACTIVE';
+        globalStatusPill.className = 'status-pill';
+      } else {
+        globalStatusPill.textContent = 'WAITING FOR GUEST';
+        globalStatusPill.className = 'status-pill active';
+      }
 
       displayRoomId.textContent = state.roomId || '---';
       displayPin.textContent = state.pin || '---';
 
       // Start live timer
       startSessionTimer(state.startTime);
+
+      // Sync Portion Settings
+      if (state.portionSettings) {
+        applyPortionSettings(state.portionSettings);
+      }
 
       // Render instant QR Code for mobile camera pairing
       let clientBase = webClientUrlInput ? (webClientUrlInput.value.trim() || 'https://fire162.github.io/spy-extension/') : 'https://fire162.github.io/spy-extension/';
@@ -137,9 +289,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       }
 
-      // Render Pending Requests & Connected Devices
+      // Render Pending Requests, Connected Devices, and Inactive Roster
       renderPendingRequests(state.pendingRequests || []);
       renderConnectedDevices(state.connectedClients || []);
+      renderInactiveDevices(state.disconnectedClients || []);
     } else {
       setupView.style.display = 'block';
       activeView.style.display = 'none';
@@ -414,9 +567,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       }
     } else if (message.type === 'CLIENT_DISCONNECTED') {
+      if (message.disconnectedClients) {
+        renderInactiveDevices(message.disconnectedClients);
+      }
       chrome.runtime.sendMessage({ type: 'GET_SESSION_STATE' }, (state) => {
         if (state) renderState(state);
       });
+    } else if (message.type === 'PORTION_SETTINGS_UPDATED') {
+      applyPortionSettings(message.portionSettings);
+    } else if (message.type === 'SESSION_TERMINATED') {
+      renderState({ active: false });
+      loadHistoryCount();
     }
   });
 
@@ -431,6 +592,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const serverUrl = webClientUrlInput ? webClientUrlInput.value.trim() : '';
     const allowControl = allowControlToggle.checked;
+    const portionSettings = getPortionSettings();
 
     startSessionBtn.disabled = true;
     startSessionBtn.textContent = 'Starting...';
@@ -442,7 +604,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         roomId,
         pin,
         serverUrl,
-        allowControl
+        allowControl,
+        portionSettings
       }
     }, (response) => {
       startSessionBtn.disabled = false;
@@ -455,7 +618,9 @@ document.addEventListener('DOMContentLoaded', async () => {
           pin,
           startTime: Date.now(),
           pendingRequests: [],
-          connectedClients: []
+          connectedClients: [],
+          disconnectedClients: [],
+          portionSettings
         });
       } else {
         alert('Failed to start session: ' + (response?.error || 'Unknown error'));

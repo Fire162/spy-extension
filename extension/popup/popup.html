@@ -43,6 +43,38 @@
           <span class="setting-desc">You can also approve/deny devices individually in real time.</span>
         </div>
 
+        <div class="portion-box">
+          <div class="portion-header">
+            <label class="toggle-switch">
+              <input type="checkbox" id="portionToggle">
+              <span class="slider"></span>
+              <span class="toggle-label">🔒 View-Only Portion Crop</span>
+            </label>
+          </div>
+          <span class="setting-desc">Share only a selected screen portion with View-Only guests.</span>
+          <div id="portionControls" class="portion-controls" style="display: none;">
+            <div class="portion-row">
+              <label for="portionPresetSelect">Preset Region:</label>
+              <select id="portionPresetSelect" class="select-sm">
+                <option value="topHalf">Top Half (0–50%)</option>
+                <option value="bottomHalf">Bottom Half (50–100%)</option>
+                <option value="center">Center Focus (25–75%)</option>
+                <option value="mainContent">Main Content (Top 70%)</option>
+                <option value="custom">Custom Area</option>
+              </select>
+            </div>
+            <div class="portion-grid">
+              <label>X% <input type="number" id="portionX" min="0" max="90" value="0"></label>
+              <label>Y% <input type="number" id="portionY" min="0" max="90" value="0"></label>
+              <label>W% <input type="number" id="portionW" min="10" max="100" value="100"></label>
+              <label>H% <input type="number" id="portionH" min="10" max="100" value="50"></label>
+            </div>
+            <div class="portion-preview-track">
+              <div id="portionPreviewBox" class="portion-preview-rect"></div>
+            </div>
+          </div>
+        </div>
+
         <div class="accordion">
           <div class="accordion-header" id="serverSettingsHeader">
             <span>⚙️ Controller URL Settings</span>
@@ -92,6 +124,18 @@
           </div>
         </div>
 
+        <!-- Live Portion Control in Active Session -->
+        <div class="portion-box" id="activePortionBox">
+          <div class="portion-header">
+            <label class="toggle-switch">
+              <input type="checkbox" id="activePortionToggle">
+              <span class="slider"></span>
+              <span class="toggle-label">🔒 View-Only Portion Crop</span>
+            </label>
+          </div>
+          <span class="setting-desc">Toggles live cropped stream for View-Only viewers.</span>
+        </div>
+
         <!-- Section: Pending Connection Requests Queue -->
         <div class="device-section" id="pendingSection" style="display: none;">
           <div class="section-header">
@@ -116,6 +160,17 @@
           <div class="active-banner" id="noDevicesBanner">
             <div class="pulse-ring"></div>
             <span>Waiting for devices to enter PIN and join...</span>
+          </div>
+        </div>
+
+        <!-- Section: Inactive / Disconnected Devices -->
+        <div class="device-section" id="inactiveSection" style="display: none;">
+          <div class="section-header">
+            <span class="section-title" style="color:var(--text-muted)">💤 INACTIVE / LEFT DEVICES</span>
+            <span class="badge-count" id="inactiveCountBadge" style="background:#374151;color:var(--text-muted);">0</span>
+          </div>
+          <div class="devices-list" id="inactiveList">
+            <!-- Dynamically injected inactive device rows -->
           </div>
         </div>
 

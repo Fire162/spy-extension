@@ -705,3 +705,119 @@ input:checked + .slider::after {
   color: var(--text-muted);
   font-family: var(--font-mono);
 }
+
+/* Portion Cropping Box & Controls */
+.portion-box {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.portion-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.portion-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+.portion-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.select-sm {
+  background: #090d16;
+  color: #fff;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.portion-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.portion-grid label {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.portion-grid input {
+  background: #090d16;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 3px 4px;
+  text-align: center;
+}
+
+.portion-preview-track {
+  width: 100%;
+  height: 38px;
+  background: #090d16;
+  border: 1px dashed #334155;
+  border-radius: 4px;
+  position: relative;
+  overflow: hidden;
+}
+
+.portion-preview-rect {
+  position: absolute;
+  background: rgba(56, 189, 248, 0.35);
+  border: 1px solid #38bdf8;
+  border-radius: 2px;
+  transition: all 0.15s ease-out;
+}
+
+/* Inactive / Disconnected Device Cards */
+.inactive-card {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  padding: 6px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.inactive-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.inactive-badge {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  padding: 2px 6px;
+  border-radius: 4px;
+}

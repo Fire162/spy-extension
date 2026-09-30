@@ -33,6 +33,134 @@ function notifyClientListUpdate() {
   });
 }
 
+// Portion Cropping Engine for View-Only privacy sharing
+let portionSettings = { enabled: false, preset: 'topHalf', x: 0, y: 0, width: 100, height: 50 };
+let cropVideoEl = null;
+let cropCanvasEl = null;
+let cropCtx = null;
+let cropStream = null;
+let isCropLoopActive = false;
+let cropAnimFrameId = null;
+
+function getCroppedStream() {
+  if (cropStream) return cropStream;
+
+  if (!cropVideoEl) {
+    cropVideoEl = document.createElement('video');
+    cropVideoEl.autoplay = true;
+    cropVideoEl.muted = true;
+    cropVideoEl.playsInline = true;
+  }
+
+  if (mediaStream && cropVideoEl.srcObject !== mediaStream) {
+    cropVideoEl.srcObject = mediaStream;
+    cropVideoEl.play().catch(() => {});
+  }
+
+  if (!cropCanvasEl) {
+    cropCanvasEl = document.createElement('canvas');
+    cropCanvasEl.width = 1280;
+    cropCanvasEl.height = 720;
+    cropCtx = cropCanvasEl.getContext('2d', { alpha: false, desynchronized: true });
+  }
+
+  cropStream = cropCanvasEl.captureStream(60);
+
+  // Attach tab audio track to cropped stream if audio is present
+  if (mediaStream && mediaStream.getAudioTracks().length > 0) {
+    cropStream.addTrack(mediaStream.getAudioTracks()[0].clone());
+  }
+
+  startCropRendering();
+  return cropStream;
+}
+
+function startCropRendering() {
+  if (isCropLoopActive) return;
+  isCropLoopActive = true;
+
+  function renderCropFrame() {
+    if (!isCropLoopActive || !mediaStream) return;
+
+    if (cropVideoEl && cropVideoEl.readyState >= 2) {
+      const vw = cropVideoEl.videoWidth || 1920;
+      const vh = cropVideoEl.videoHeight || 1080;
+
+      const xPct = Math.max(0, Math.min(90, (portionSettings.x || 0))) / 100;
+      const yPct = Math.max(0, Math.min(90, (portionSettings.y || 0))) / 100;
+      const wPct = Math.max(10, Math.min(100 - (portionSettings.x || 0), (portionSettings.width || 100))) / 100;
+      const hPct = Math.max(10, Math.min(100 - (portionSettings.y || 0), (portionSettings.height || 100))) / 100;
+
+      const sx = Math.round(vw * xPct);
+      const sy = Math.round(vh * yPct);
+      const sw = Math.round(vw * wPct);
+      const sh = Math.round(vh * hPct);
+
+      if (cropCanvasEl.width !== sw || cropCanvasEl.height !== sh) {
+        cropCanvasEl.width = Math.max(320, sw);
+        cropCanvasEl.height = Math.max(180, sh);
+      }
+
+      cropCtx.drawImage(cropVideoEl, sx, sy, sw, sh, 0, 0, cropCanvasEl.width, cropCanvasEl.height);
+    }
+
+    if ('requestVideoFrameCallback' in cropVideoEl) {
+      cropVideoEl.requestVideoFrameCallback(renderCropFrame);
+    } else {
+      cropAnimFrameId = requestAnimationFrame(renderCropFrame);
+    }
+  }
+
+  if ('requestVideoFrameCallback' in cropVideoEl) {
+    cropVideoEl.requestVideoFrameCallback(renderCropFrame);
+  } else {
+    cropAnimFrameId = requestAnimationFrame(renderCropFrame);
+  }
+}
+
+function updatePortionSettings(settings) {
+  portionSettings = { ...portionSettings, ...settings };
+  console.log('Offscreen updated portion settings:', portionSettings);
+
+  // Switch video track for all active View-Only clients dynamically
+  for (const [clientId, client] of connectedClients) {
+    if (!client.canControl && client.call && client.call.peerConnection) {
+      const targetStream = portionSettings.enabled ? getCroppedStream() : mediaStream;
+      const targetTrack = targetStream ? targetStream.getVideoTracks()[0] : null;
+      const senders = client.call.peerConnection.getSenders();
+      const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+      if (videoSender && targetTrack) {
+        videoSender.replaceTrack(targetTrack).catch(err => {
+          console.warn('Track replacement notice:', err);
+        });
+      }
+      try {
+        client.conn.send({
+          type: 'portion-update',
+          portionEnabled: portionSettings.enabled,
+          portion: portionSettings
+        });
+      } catch (e) {}
+    }
+  }
+}
+
+function setupPeerConnectionListeners(clientId, pc) {
+  if (!pc) return;
+  pc.addEventListener('connectionstatechange', () => {
+    console.log(`PeerConnection state for ${clientId}:`, pc.connectionState);
+    if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      removeClient(clientId, `WebRTC ${pc.connectionState}`);
+    }
+  });
+  pc.addEventListener('iceconnectionstatechange', () => {
+    console.log(`ICE state for ${clientId}:`, pc.iceConnectionState);
+    if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
+      removeClient(clientId, `Network ${pc.iceConnectionState}`);
+    }
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== 'offscreen') return;
 
@@ -52,22 +180,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true });
       break;
 
+    case 'UPDATE_PORTION_SETTINGS':
+      updatePortionSettings(message.payload);
+      sendResponse({ success: true });
+      break;
+
     case 'KICK_CLIENT':
       kickClient(message.payload);
       sendResponse({ success: true });
       break;
 
     case 'STOP_SESSION':
-      stopSession();
+      stopSession(message.payload?.reason || 'Host closed session');
       sendResponse({ success: true });
       break;
   }
   return true;
 });
 
-async function startSession({ streamId, roomId, pin }) {
+async function startSession({ streamId, roomId, pin, portionSettings: initialPortion }) {
   // Always perform full teardown of any previous session first
   stopSession();
+
+  if (initialPortion) {
+    portionSettings = { ...portionSettings, ...initialPortion };
+  }
 
   currentRoomId = roomId;
   currentPin = String(pin).trim();
@@ -241,20 +378,26 @@ async function handlePermissionDecision({ clientId, approved, canControl }) {
   pendingClients.delete(clientId);
 
   if (approved) {
-    console.log(`Host granted access to ${deviceInfo} (${clientId}). canControl: ${canControl}`);
+    const isPortion = !canControl && portionSettings.enabled;
+    const streamToShare = isPortion ? getCroppedStream() : mediaStream;
+
+    console.log(`Host granted access to ${deviceInfo} (${clientId}). canControl: ${canControl}, isPortion: ${isPortion}`);
     conn.send({
       type: 'permission-result',
       approved: true,
-      canControl: !!canControl
+      canControl: !!canControl,
+      portionEnabled: isPortion,
+      portion: isPortion ? portionSettings : null
     });
 
     let call = null;
     // Broadcast live media stream to this approved peer
-    if (mediaStream && peer) {
-      console.log('Initiating WebRTC media call to peer:', clientId);
-      call = peer.call(clientId, mediaStream);
+    if (streamToShare && peer) {
+      console.log('Initiating WebRTC media call to peer:', clientId, isPortion ? '(Cropped Portion)' : '(Full Screen)');
+      call = peer.call(clientId, streamToShare);
       if (call && call.peerConnection) {
         tuneBitrate(call.peerConnection);
+        setupPeerConnectionListeners(clientId, call.peerConnection);
       }
     }
 
@@ -286,10 +429,27 @@ function updateClientRole({ clientId, canControl }) {
   const client = connectedClients.get(clientId);
   if (client) {
     client.canControl = !!canControl;
+    const isPortion = !client.canControl && portionSettings.enabled;
+
+    // Dynamically replace the video track on the WebRTC peer connection
+    if (client.call && client.call.peerConnection) {
+      const targetStream = isPortion ? getCroppedStream() : mediaStream;
+      const targetTrack = targetStream ? targetStream.getVideoTracks()[0] : null;
+      const senders = client.call.peerConnection.getSenders();
+      const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+      if (videoSender && targetTrack) {
+        videoSender.replaceTrack(targetTrack).catch(err => {
+          console.warn('Track replacement notice:', err);
+        });
+      }
+    }
+
     try {
       client.conn.send({
         type: 'role-update',
-        canControl: !!canControl
+        canControl: !!canControl,
+        portionEnabled: isPortion,
+        portion: isPortion ? portionSettings : null
       });
     } catch (e) {}
     notifyClientListUpdate();
@@ -314,11 +474,14 @@ function kickClient({ clientId }) {
 }
 
 function removeClient(clientId, reason) {
+  let devInfo = 'Remote Device';
   if (pendingClients.has(clientId)) {
+    devInfo = pendingClients.get(clientId).deviceInfo || devInfo;
     pendingClients.delete(clientId);
   }
   if (connectedClients.has(clientId)) {
     const client = connectedClients.get(clientId);
+    devInfo = client.deviceInfo || devInfo;
     if (client.call) {
       try { client.call.close(); } catch (e) {}
     }
@@ -328,6 +491,7 @@ function removeClient(clientId, reason) {
   chrome.runtime.sendMessage({
     type: 'CLIENT_DISCONNECTED',
     clientId,
+    deviceInfo: devInfo,
     reason
   });
 }
@@ -362,7 +526,20 @@ async function tuneBitrate(pc) {
   setTimeout(applySettings, 2000);
 }
 
-function stopSession() {
+function stopSession(reason = 'Host ended session') {
+  isCropLoopActive = false;
+  if (cropAnimFrameId) {
+    cancelAnimationFrame(cropAnimFrameId);
+    cropAnimFrameId = null;
+  }
+  if (cropStream) {
+    cropStream.getTracks().forEach(t => t.stop());
+    cropStream = null;
+  }
+  if (cropVideoEl) {
+    cropVideoEl.srcObject = null;
+  }
+
   if (audioCtx) {
     try { audioCtx.close(); } catch (e) {}
     audioCtx = null;
@@ -372,10 +549,11 @@ function stopSession() {
     mediaStream = null;
   }
 
-  // Close all connected clients
+  // Broadcast termination notice to all connected clients BEFORE closing connections
   for (const [clientId, client] of connectedClients) {
     try {
-      client.conn.send({ type: 'session-ended', reason: 'Host closed session' });
+      client.conn.send({ type: 'host-tab-closed', reason });
+      client.conn.send({ type: 'session-ended', reason });
       client.conn.close();
       if (client.call) client.call.close();
     } catch (e) {}
@@ -385,7 +563,8 @@ function stopSession() {
   // Close all pending unapproved clients
   for (const [clientId, pending] of pendingClients) {
     try {
-      pending.conn.send({ type: 'session-ended', reason: 'Host closed session' });
+      pending.conn.send({ type: 'host-tab-closed', reason });
+      pending.conn.send({ type: 'session-ended', reason });
       pending.conn.close();
     } catch (e) {}
   }

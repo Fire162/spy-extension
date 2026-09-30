@@ -112,7 +112,8 @@ https://fire162.github.io/spy-extension/
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
-| 1.3.1 | 2026-09-30 | Fix pending request card dismissal upon clicking Allow/Deny, prevent double submissions with disabled button states, animated exit transitions, background badge & notification auto-clear, and active roster reconciliation | Current |
+| 1.4.0 | 2026-09-30 | View-only screen portion/crop sharing (live offscreen canvas capture stream with region presets and dynamic replaceTrack), real-time guest inactivity/disconnection tracking on host screen, and complete host tab closure session lockdown preventing frozen screens or orphaned text dispatch | Current |
+| 1.3.1 | 2026-09-30 | Fix pending request card dismissal upon clicking Allow/Deny, prevent double submissions with disabled button states, animated exit transitions, background badge & notification auto-clear, and active roster reconciliation | Archived |
 | 1.3.0 | 2026-09-30 | Multi-peer WebRTC 1-to-many streaming pool (supports multiple devices simultaneously), incoming requests queue with device detection (Mobile/Desktop), active connected devices roster with dynamic role toggling & kick controls, and persistent past & expired session history log | Archived |
 | 1.2.0 | 2026-09-30 | Remote navigation toolbar (Back/Forward/Reload/URL bar), instant QR code pairing in extension popup, 2-finger mobile pinch-to-zoom & pan, host live laser pointer, 8 Mbps Ultra-HD WebRTC bitrate boost, and mobile clipboard paste | Archived |
 | 1.1.0 | 2026-09-30 | Low-latency WebRTC optimization (zero-jitter buffering, 60fps capture, dimension caching), mobile touch dock, virtual keyboard, and live tab audio | Archived |
