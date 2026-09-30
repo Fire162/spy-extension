@@ -187,48 +187,6 @@ async function handleInputEvent(input) {
       const button = input.button === 'right' ? 'right' : (input.button === 'middle' ? 'middle' : 'left');
       const buttonsBit = button === 'right' ? 2 : (button === 'middle' ? 4 : 1);
 
-      // Visual feedback: Host Laser Pointer indicator
-      try {
-        const isClick = input.action === 'click' || input.action === 'down';
-        chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
-          expression: `
-            (() => {
-              let dot = document.getElementById('__spy_laser__');
-              if (!dot) {
-                dot = document.createElement('div');
-                dot.id = '__spy_laser__';
-                dot.style.cssText = 'position:fixed;width:14px;height:14px;border-radius:50%;background:rgba(56,189,248,0.9);box-shadow:0 0 10px #38bdf8, 0 0 18px rgba(56,189,248,0.6);border:2px solid #ffffff;pointer-events:none;z-index:2147483647;transition:transform 0.05s ease-out, opacity 0.3s;transform:translate(-50%,-50%);';
-                const lbl = document.createElement('div');
-                lbl.textContent = 'Remote';
-                lbl.style.cssText = 'position:absolute;top:16px;left:50%;transform:translateX(-50%);background:rgba(15,23,42,0.85);color:#38bdf8;font-family:sans-serif;font-size:9px;font-weight:600;padding:2px 5px;border-radius:4px;border:1px solid rgba(56,189,248,0.3);white-space:nowrap;pointer-events:none;';
-                dot.appendChild(lbl);
-                document.documentElement.appendChild(dot);
-              }
-              const w = window.innerWidth;
-              const h = window.innerHeight;
-              const curX = Math.round(${input.x} * w);
-              const curY = Math.round(${input.y} * h);
-              dot.style.left = curX + 'px';
-              dot.style.top = curY + 'px';
-              dot.style.opacity = '1';
-              ${isClick ? `
-                dot.style.transform = 'translate(-50%, -50%) scale(1.6)';
-                setTimeout(() => { if (dot) dot.style.transform = 'translate(-50%, -50%) scale(1)'; }, 150);
-              ` : ''}
-              clearTimeout(window.__spy_laser_timer__);
-              window.__spy_laser_timer__ = setTimeout(() => { if (dot) dot.style.opacity = '0'; }, 2000);
-              return { w, h };
-            })()
-          `,
-          returnByValue: true
-        }).then(res => {
-          if (res?.result?.value) {
-            sessionState.tabWidth = res.result.value.w;
-            sessionState.tabHeight = res.result.value.h;
-          }
-        }).catch(() => {});
-      } catch (e) {}
-
       if (input.action === 'move') {
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
           type: 'mouseMoved',

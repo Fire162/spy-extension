@@ -25,9 +25,6 @@
   const screenFitBtn = document.getElementById('screenFitBtn');
   const screenFitIcon = document.getElementById('screenFitIcon');
   const screenFitText = document.getElementById('screenFitText');
-  const screenModePill = document.getElementById('screenModePill');
-  const screenModePillStatus = document.getElementById('screenModePillStatus');
-  const floatingFitBtn = document.getElementById('floatingFitBtn');
   const fullscreenBtn = document.getElementById('fullscreenBtn');
   const disconnectBtn = document.getElementById('disconnectBtn');
   const reconnectBtn = document.getElementById('reconnectBtn');
@@ -318,7 +315,6 @@
           disconnectBtn.style.display = 'inline-flex';
           fullscreenBtn.style.display = 'inline-flex';
           if (screenFitBtn) screenFitBtn.style.display = 'inline-flex';
-          if (screenModePill) screenModePill.style.display = 'flex';
           syncScreenModeUI();
 
           activePortion = (!canControl && data.portionEnabled) ? data.portion : null;
@@ -569,17 +565,6 @@
       } else {
         screenFitBtn.classList.add('is-fit');
       }
-    }
-    if (screenModePillStatus) {
-      if (activePortion && !canControl) {
-        screenModePillStatus.textContent = isFill ? '🔒 Portion: Fill Screen' : '🔒 Portion: Fit Ratio';
-      } else {
-        screenModePillStatus.textContent = isFill ? '🔲 Fill Screen (Zero Bars)' : '📐 Fit Ratio (Original)';
-      }
-      screenModePillStatus.style.color = isFill ? '#38bdf8' : '#fbbf24';
-    }
-    if (floatingFitBtn) {
-      floatingFitBtn.textContent = isFill ? 'Fit Ratio 📐' : 'Fill Screen 🔲';
     }
   }
 
@@ -1088,7 +1073,6 @@
     disconnectBtn.style.display = 'none';
     fullscreenBtn.style.display = 'none';
     if (screenFitBtn) screenFitBtn.style.display = 'none';
-    if (screenModePill) screenModePill.style.display = 'none';
     audioToggleBtn.style.display = 'none';
     audioNotice.style.display = 'none';
     mobileDock.style.display = 'none';
@@ -1151,10 +1135,6 @@
 
   if (screenFitBtn) {
     screenFitBtn.addEventListener('click', toggleScreenScaleMode);
-  }
-
-  if (floatingFitBtn) {
-    floatingFitBtn.addEventListener('click', toggleScreenScaleMode);
   }
 
   remoteVideo.addEventListener('loadedmetadata', () => {

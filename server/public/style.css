@@ -181,7 +181,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: crosshair;
+  cursor: default;
   touch-action: none;
   overscroll-behavior: none;
   -webkit-touch-callout: none;
@@ -726,69 +726,6 @@ body {
 .btn-screen-fit.is-fit:hover {
   background: rgba(245, 158, 11, 0.25);
   border-color: #fbbf24;
-}
-
-/* Screen Fit / Aspect Ratio Floating Pill in Viewport */
-.screen-mode-pill {
-  position: absolute;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(15, 23, 42, 0.92);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(56, 189, 248, 0.35);
-  border-radius: 24px;
-  padding: 6px 14px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  z-index: 40;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.7);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: #f3f4f6;
-  pointer-events: auto;
-  user-select: none;
-  animation: fadeInPill 0.3s ease-out;
-}
-
-@keyframes fadeInPill {
-  from { opacity: 0; transform: translate(-50%, 10px); }
-  to { opacity: 1; transform: translate(-50%, 0); }
-}
-
-.screen-mode-pill:hover {
-  border-color: #38bdf8;
-  box-shadow: 0 8px 30px rgba(56, 189, 248, 0.25);
-}
-
-.screen-mode-pill .mode-pill-status {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 600;
-  color: #38bdf8;
-  white-space: nowrap;
-}
-
-.btn-pill-action {
-  background: rgba(56, 189, 248, 0.2);
-  color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.45);
-  font-size: 11px;
-  font-weight: 700;
-  padding: 4px 10px;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: all 0.2s;
-  font-family: var(--font-mono);
-  white-space: nowrap;
-}
-
-.btn-pill-action:hover {
-  background: #38bdf8;
-  color: #030712;
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
 }
 
 /* Responsive Media Queries */
