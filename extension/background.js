@@ -204,8 +204,12 @@ async function handleInputEvent(input) {
                 dot.appendChild(lbl);
                 document.documentElement.appendChild(dot);
               }
-              dot.style.left = '${targetX}px';
-              dot.style.top = '${targetY}px';
+              const w = window.innerWidth;
+              const h = window.innerHeight;
+              const curX = Math.round(${input.x} * w);
+              const curY = Math.round(${input.y} * h);
+              dot.style.left = curX + 'px';
+              dot.style.top = curY + 'px';
               dot.style.opacity = '1';
               ${isClick ? `
                 dot.style.transform = 'translate(-50%, -50%) scale(1.6)';
@@ -213,8 +217,15 @@ async function handleInputEvent(input) {
               ` : ''}
               clearTimeout(window.__spy_laser_timer__);
               window.__spy_laser_timer__ = setTimeout(() => { if (dot) dot.style.opacity = '0'; }, 2000);
+              return { w, h };
             })()
-          `
+          `,
+          returnByValue: true
+        }).then(res => {
+          if (res?.result?.value) {
+            sessionState.tabWidth = res.result.value.w;
+            sessionState.tabHeight = res.result.value.h;
+          }
         }).catch(() => {});
       } catch (e) {}
 
@@ -700,5 +711,18 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   if (sessionState.tabId === source.tabId) {
     console.log('Debugger was detached natively:', reason);
     stopHostSession('debugger-detached');
+  }
+});
+
+// Keep tab dimensions updated on tab navigation or window resize
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (sessionState.tabId === tabId && changeInfo.status === 'complete') {
+    refreshTabDimensions(tabId);
+  }
+});
+
+chrome.windows.onBoundsChanged.addListener(() => {
+  if (sessionState.tabId) {
+    refreshTabDimensions(sessionState.tabId);
   }
 });
