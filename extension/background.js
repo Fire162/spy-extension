@@ -88,9 +88,42 @@ async function refreshTabDimensions(tabId) {
 
 // Zero-delay input dispatch using cached tab dimensions
 async function handleInputEvent(input) {
-  if (!sessionState.active || !sessionState.canControl || !sessionState.tabId) return;
+  if (!sessionState.active || !sessionState.tabId) return;
 
   const tabId = sessionState.tabId;
+
+  // 1. Remote Browser Navigation Commands
+  if (input.type === 'nav-back') {
+    if (!sessionState.canControl) return;
+    await chrome.tabs.goBack(tabId).catch(() => {});
+    return;
+  }
+  if (input.type === 'nav-forward') {
+    if (!sessionState.canControl) return;
+    await chrome.tabs.goForward(tabId).catch(() => {});
+    return;
+  }
+  if (input.type === 'nav-reload') {
+    if (!sessionState.canControl) return;
+    await chrome.tabs.reload(tabId).catch(() => {});
+    return;
+  }
+  if (input.type === 'nav-url' && input.url) {
+    if (!sessionState.canControl) return;
+    let targetUrl = input.url.trim();
+    if (!/^https?:\/\//i.test(targetUrl)) {
+      if (targetUrl.includes('.') && !targetUrl.includes(' ')) {
+        targetUrl = 'https://' + targetUrl;
+      } else {
+        targetUrl = 'https://www.google.com/search?q=' + encodeURIComponent(targetUrl);
+      }
+    }
+    await chrome.tabs.update(tabId, { url: targetUrl }).catch(() => {});
+    return;
+  }
+
+  if (!sessionState.canControl) return;
+
   const targetX = Math.round(input.x * (sessionState.tabWidth || 1920));
   const targetY = Math.round(input.y * (sessionState.tabHeight || 1080));
 
@@ -98,6 +131,37 @@ async function handleInputEvent(input) {
     if (input.type === 'input-mouse') {
       const button = input.button === 'right' ? 'right' : (input.button === 'middle' ? 'middle' : 'left');
       const buttonsBit = button === 'right' ? 2 : (button === 'middle' ? 4 : 1);
+
+      // Visual feedback: Host Laser Pointer indicator
+      try {
+        const isClick = input.action === 'click' || input.action === 'down';
+        chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+          expression: `
+            (() => {
+              let dot = document.getElementById('__spy_laser__');
+              if (!dot) {
+                dot = document.createElement('div');
+                dot.id = '__spy_laser__';
+                dot.style.cssText = 'position:fixed;width:14px;height:14px;border-radius:50%;background:rgba(56,189,248,0.9);box-shadow:0 0 10px #38bdf8, 0 0 18px rgba(56,189,248,0.6);border:2px solid #ffffff;pointer-events:none;z-index:2147483647;transition:transform 0.05s ease-out, opacity 0.3s;transform:translate(-50%,-50%);';
+                const lbl = document.createElement('div');
+                lbl.textContent = 'Remote';
+                lbl.style.cssText = 'position:absolute;top:16px;left:50%;transform:translateX(-50%);background:rgba(15,23,42,0.85);color:#38bdf8;font-family:sans-serif;font-size:9px;font-weight:600;padding:2px 5px;border-radius:4px;border:1px solid rgba(56,189,248,0.3);white-space:nowrap;pointer-events:none;';
+                dot.appendChild(lbl);
+                document.documentElement.appendChild(dot);
+              }
+              dot.style.left = '${targetX}px';
+              dot.style.top = '${targetY}px';
+              dot.style.opacity = '1';
+              ${isClick ? `
+                dot.style.transform = 'translate(-50%, -50%) scale(1.6)';
+                setTimeout(() => { if (dot) dot.style.transform = 'translate(-50%, -50%) scale(1)'; }, 150);
+              ` : ''}
+              clearTimeout(window.__spy_laser_timer__);
+              window.__spy_laser_timer__ = setTimeout(() => { if (dot) dot.style.opacity = '0'; }, 2000);
+            })()
+          `
+        }).catch(() => {});
+      } catch (e) {}
 
       if (input.action === 'move') {
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
@@ -341,6 +405,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'STOP_HOST_SESSION': {
       (async () => {
         if (sessionState.tabId) {
+          try {
+            await chrome.debugger.sendCommand({ tabId: sessionState.tabId }, 'Runtime.evaluate', {
+              expression: `(() => { const el = document.getElementById('__spy_laser__'); if (el) el.remove(); })()`
+            }).catch(() => {});
+          } catch (e) {}
           await detachDebugger(sessionState.tabId);
         }
         chrome.runtime.sendMessage({

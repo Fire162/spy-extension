@@ -63,6 +63,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       displayRoomId.textContent = state.roomId || '---';
       displayPin.textContent = state.pin || '---';
 
+      // Render instant QR Code for mobile camera pairing
+      let clientBase = webClientUrlInput ? (webClientUrlInput.value.trim() || 'https://fire162.github.io/spy-extension/') : 'https://fire162.github.io/spy-extension/';
+      if (!clientBase.endsWith('/')) clientBase += '/';
+      const shareUrl = `${clientBase}#room=${encodeURIComponent(state.roomId || '')}&pin=${encodeURIComponent(state.pin || '')}`;
+      const qrEl = document.getElementById('qrcode');
+      if (qrEl && typeof qrcode !== 'undefined' && state.roomId) {
+        try {
+          const qr = qrcode(0, 'M');
+          qr.addData(shareUrl);
+          qr.make();
+          qrEl.innerHTML = qr.createSvgTag(3, 0);
+        } catch (e) {
+          console.warn('QR code generation notice:', e);
+        }
+      }
+
       if (state.pendingRequest) {
         consentCard.style.display = 'flex';
         requestNoticeText.textContent = `User (${state.pendingRequest.clientId || 'Remote'}) requested access to this tab.`;

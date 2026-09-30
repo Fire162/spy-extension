@@ -70,6 +70,12 @@
             📋 Copy Controller Link
           </button>
         </div>
+
+        <!-- Mobile QR Code Instant Pairing -->
+        <div class="qr-container" id="qrContainer">
+          <div class="qr-box" id="qrcode"></div>
+          <span class="qr-caption">📱 Point phone camera to connect instantly</span>
+        </div>
       </div>
 
       <!-- Consent Request Dialog (When controller connects) -->
@@ -100,6 +106,7 @@
     </footer>
   </div>
 
+  <script src="qrcode.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

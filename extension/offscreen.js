@@ -59,12 +59,21 @@ async function startSession({ streamId, roomId, pin }) {
           chromeMediaSource: 'tab',
           chromeMediaSourceId: streamId,
           maxFrameRate: 144,
+          minWidth: 1280,
           maxWidth: 1920,
+          minHeight: 720,
           maxHeight: 1080
         }
       }
     });
-    console.log('Tab audio & video media stream captured successfully');
+
+    // Optimize video track for high text clarity and detail
+    const vTrack = mediaStream.getVideoTracks()[0];
+    if (vTrack && 'contentHint' in vTrack) {
+      vTrack.contentHint = 'detail';
+    }
+
+    console.log('Tab audio & video media stream captured successfully (Ultra-HD detail hint)');
 
     // Route audio to host speakers so the host tab audio remains audible locally
     try {
@@ -150,8 +159,8 @@ async function startSession({ streamId, roomId, pin }) {
         });
       } else if (data.type === 'ping') {
         conn.send({ type: 'pong', time: data.time });
-      } else if (data.type && data.type.startsWith('input-')) {
-        // Forward input event to service worker for execution
+      } else if (data.type && (data.type.startsWith('input-') || data.type.startsWith('nav-') || data.type === 'remote-pointer')) {
+        // Forward input, navigation, or pointer event to service worker for execution
         chrome.runtime.sendMessage({
           type: 'EXECUTE_INPUT',
           input: data
@@ -194,6 +203,9 @@ async function handlePermissionDecision({ approved, canControl }) {
     if (mediaStream && peer) {
       console.log('Calling controller with media stream:', activeConn.peer);
       activeCall = peer.call(activeConn.peer, mediaStream);
+      if (activeCall && activeCall.peerConnection) {
+        tuneBitrate(activeCall.peerConnection);
+      }
     }
   } else {
     console.log('Host denied access request.');
@@ -205,6 +217,36 @@ async function handlePermissionDecision({ approved, canControl }) {
     activeConn.close();
     activeConn = null;
   }
+}
+
+// Boost WebRTC video sender encoding bitrate for crisp text clarity and high FPS smoothness
+async function tuneBitrate(pc) {
+  if (!pc) return;
+  const applySettings = async () => {
+    try {
+      const senders = pc.getSenders();
+      for (const sender of senders) {
+        if (sender.track && sender.track.kind === 'video') {
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          params.encodings[0].maxBitrate = 8000000; // 8 Mbps Ultra-HD
+          params.encodings[0].networkPriority = 'high';
+          if ('degradationPreference' in params) {
+            params.degradationPreference = 'maintain-resolution';
+          }
+          await sender.setParameters(params);
+          console.log('Applied 8 Mbps Ultra-HD bitrate and maintain-resolution to video sender');
+        }
+      }
+    } catch (e) {
+      console.warn('Bitrate tuning notice:', e);
+    }
+  };
+
+  setTimeout(applySettings, 500);
+  setTimeout(applySettings, 2000);
 }
 
 function stopSession() {

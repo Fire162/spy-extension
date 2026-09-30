@@ -44,7 +44,23 @@
   const mobileInputSheet = document.getElementById('mobileInputSheet');
   const mobileTextInput = document.getElementById('mobileTextInput');
   const mobileSendTextBtn = document.getElementById('mobileSendTextBtn');
+  const mobilePasteBtn = document.getElementById('mobilePasteBtn');
   const closeSheetBtn = document.getElementById('closeSheetBtn');
+
+  // Navigation Elements
+  const navToolbar = document.getElementById('navToolbar');
+  const navBarToggleBtn = document.getElementById('navBarToggleBtn');
+  const navBackBtn = document.getElementById('navBackBtn');
+  const navForwardBtn = document.getElementById('navForwardBtn');
+  const navReloadBtn = document.getElementById('navReloadBtn');
+  const navUrlForm = document.getElementById('navUrlForm');
+  const navUrlInput = document.getElementById('navUrlInput');
+  const navCloseBtn = document.getElementById('navCloseBtn');
+
+  // Zoom Elements
+  const zoomPill = document.getElementById('zoomPill');
+  const zoomLevelText = document.getElementById('zoomLevelText');
+  const resetZoomBtn = document.getElementById('resetZoomBtn');
 
   // Connection State
   let peer = null;
@@ -56,7 +72,7 @@
   let lastPingTimestamp = 0;
   let isMuted = false;
 
-  // Touch State
+  // Touch & Pinch-to-Zoom State
   let touchMode = 'tap'; // 'tap' or 'scroll'
   let touchStartX = 0;
   let touchStartY = 0;
@@ -64,6 +80,14 @@
   let lastTouchX = 0;
   let lastTouchY = 0;
   let isTouchDragging = false;
+  let currentZoom = 1.0;
+  let panX = 0;
+  let panY = 0;
+  let isPinching = false;
+  let initialPinchDist = 0;
+  let initialZoom = 1.0;
+  let lastPinchMidX = 0;
+  let lastPinchMidY = 0;
 
   function sanitizePeerId(raw) {
     return 'spy-' + raw.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -244,10 +268,17 @@
             modeBadge.className = 'mode-badge control';
             modeText.textContent = 'FULL CONTROL';
             interactionNotice.textContent = '⚡ Click, tap, or type to control remote browser';
+            if (navBarToggleBtn) navBarToggleBtn.style.display = 'inline-flex';
+            if (navToolbar) {
+              navToolbar.style.display = 'flex';
+              navToolbar.classList.remove('collapsed');
+            }
           } else {
             modeBadge.className = 'mode-badge';
             modeText.textContent = 'VIEW ONLY';
             interactionNotice.textContent = '👁️ Host granted View-Only access';
+            if (navBarToggleBtn) navBarToggleBtn.style.display = 'none';
+            if (navToolbar) navToolbar.style.display = 'none';
           }
 
           updateStatus('connected', 'Live P2P');
@@ -288,9 +319,19 @@
     const videoWidth = remoteVideo.videoWidth || rect.width;
     const videoHeight = remoteVideo.videoHeight || rect.height;
 
+    // Adjust for Pinch-to-Zoom & Pan if active
+    let adjustedX = clientX;
+    let adjustedY = clientY;
+    if (currentZoom > 1.0) {
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      adjustedX = centerX + (clientX - centerX) / currentZoom - (panX / currentZoom);
+      adjustedY = centerY + (clientY - centerY) / currentZoom - (panY / currentZoom);
+    }
+
     if (!videoWidth || !videoHeight) {
-      const x = (clientX - rect.left) / rect.width;
-      const y = (clientY - rect.top) / rect.height;
+      const x = (adjustedX - rect.left) / rect.width;
+      const y = (adjustedY - rect.top) / rect.height;
       return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
     }
 
@@ -310,8 +351,8 @@
       offsetY = (rect.height - renderHeight) / 2;
     }
 
-    const clickX = clientX - rect.left - offsetX;
-    const clickY = clientY - rect.top - offsetY;
+    const clickX = adjustedX - rect.left - offsetX;
+    const clickY = adjustedY - rect.top - offsetY;
 
     const normX = Math.max(0, Math.min(1, clickX / renderWidth));
     const normY = Math.max(0, Math.min(1, clickY / renderHeight));
@@ -401,45 +442,119 @@
     if (canControl) e.preventDefault();
   });
 
+  // --- Pinch-to-Zoom & Pan Logic ---
+  function updateVideoTransform() {
+    if (currentZoom <= 1.02) {
+      currentZoom = 1.0;
+      panX = 0;
+      panY = 0;
+      remoteVideo.style.transform = '';
+      if (zoomPill) zoomPill.style.display = 'none';
+    } else {
+      remoteVideo.style.transform = `scale(${currentZoom}) translate(${panX}px, ${panY}px)`;
+      if (zoomPill) {
+        zoomPill.style.display = 'flex';
+        if (zoomLevelText) zoomLevelText.textContent = `🔍 ${currentZoom.toFixed(1)}x`;
+      }
+    }
+  }
+
+  function resetZoom() {
+    currentZoom = 1.0;
+    panX = 0;
+    panY = 0;
+    updateVideoTransform();
+  }
+
+  if (resetZoomBtn) {
+    resetZoomBtn.addEventListener('click', resetZoom);
+  }
+
   // --- Touch Listeners (Mobile / Tablet) ---
   remoteVideo.addEventListener('touchstart', (e) => {
-    if (!canControl || e.touches.length === 0) return;
-    const touch = e.touches[0];
-    touchStartX = touch.clientX;
-    touchStartY = touch.clientY;
-    lastTouchX = touch.clientX;
-    lastTouchY = touch.clientY;
-    touchStartTime = performance.now();
-    isTouchDragging = false;
+    if (!canControl) return;
+
+    if (e.touches.length === 2) {
+      isPinching = true;
+      isTouchDragging = false;
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      initialPinchDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+      initialZoom = currentZoom;
+      lastPinchMidX = (t1.clientX + t2.clientX) / 2;
+      lastPinchMidY = (t1.clientY + t2.clientY) / 2;
+      return;
+    }
+
+    if (e.touches.length === 1) {
+      const touch = e.touches[0];
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+      lastTouchX = touch.clientX;
+      lastTouchY = touch.clientY;
+      touchStartTime = performance.now();
+      isTouchDragging = false;
+    }
   }, { passive: true });
 
   remoteVideo.addEventListener('touchmove', (e) => {
-    if (!canControl || e.touches.length === 0) return;
-    const touch = e.touches[0];
-    const diffX = touch.clientX - lastTouchX;
-    const diffY = touch.clientY - lastTouchY;
-    const totalDist = Math.hypot(touch.clientX - touchStartX, touch.clientY - touchStartY);
+    if (!canControl) return;
 
-    if (totalDist > 8) {
-      isTouchDragging = true;
-    }
-
-    // Natural Mobile Scrolling: dragging fingers on touch screens scrolls the remote page
-    if (isTouchDragging) {
+    // 2-Finger Pinch to Zoom & Pan
+    if (e.touches.length === 2 && isPinching) {
       e.preventDefault();
-      const coords = getCoordinates(touch.clientX, touch.clientY);
-      // Invert delta: moving finger UP scrolls DOWN
-      sendInput({
-        type: 'input-wheel',
-        deltaX: -diffX * 3,
-        deltaY: -diffY * 3,
-        x: coords.x,
-        y: coords.y
-      });
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+      const midX = (t1.clientX + t2.clientX) / 2;
+      const midY = (t1.clientY + t2.clientY) / 2;
+
+      if (initialPinchDist > 0) {
+        const factor = dist / initialPinchDist;
+        currentZoom = Math.min(4.0, Math.max(1.0, initialZoom * factor));
+        panX += (midX - lastPinchMidX) / currentZoom;
+        panY += (midY - lastPinchMidY) / currentZoom;
+        lastPinchMidX = midX;
+        lastPinchMidY = midY;
+        updateVideoTransform();
+      }
+      return;
     }
 
-    lastTouchX = touch.clientX;
-    lastTouchY = touch.clientY;
+    if (e.touches.length === 1 && !isPinching) {
+      const touch = e.touches[0];
+      const diffX = touch.clientX - lastTouchX;
+      const diffY = touch.clientY - lastTouchY;
+      const totalDist = Math.hypot(touch.clientX - touchStartX, touch.clientY - touchStartY);
+
+      if (totalDist > 8) {
+        isTouchDragging = true;
+      }
+
+      // If mobile mode is "Tap" and zoomed in: allow 1-finger panning if dragging
+      // Otherwise scroll the remote page
+      if (isTouchDragging) {
+        e.preventDefault();
+        if (currentZoom > 1.2 && touchMode === 'tap') {
+          panX += diffX / currentZoom;
+          panY += diffY / currentZoom;
+          updateVideoTransform();
+        } else {
+          const coords = getCoordinates(touch.clientX, touch.clientY);
+          // Invert delta: moving finger UP scrolls DOWN
+          sendInput({
+            type: 'input-wheel',
+            deltaX: -diffX * 3,
+            deltaY: -diffY * 3,
+            x: coords.x,
+            y: coords.y
+          });
+        }
+      }
+
+      lastTouchX = touch.clientX;
+      lastTouchY = touch.clientY;
+    }
   }, { passive: false });
 
   function showTouchRipple(clientX, clientY) {
@@ -454,22 +569,29 @@
 
   remoteVideo.addEventListener('touchend', (e) => {
     if (!canControl) return;
-    const elapsed = performance.now() - touchStartTime;
 
-    // Quick tap without drag = Instant Click
-    if (!isTouchDragging && elapsed < 400) {
-      const coords = getCoordinates(touchStartX, touchStartY);
-      showTouchRipple(touchStartX, touchStartY);
-      navigator.vibrate?.(25);
-      sendInput({
-        type: 'input-mouse',
-        action: 'click',
-        button: 'left',
-        x: coords.x,
-        y: coords.y
-      });
+    if (e.touches.length < 2) {
+      isPinching = false;
     }
-    isTouchDragging = false;
+
+    if (e.touches.length === 0) {
+      const elapsed = performance.now() - touchStartTime;
+
+      // Quick tap without drag = Instant Click
+      if (!isTouchDragging && !isPinching && elapsed < 400) {
+        const coords = getCoordinates(touchStartX, touchStartY);
+        showTouchRipple(touchStartX, touchStartY);
+        navigator.vibrate?.(25);
+        sendInput({
+          type: 'input-mouse',
+          action: 'click',
+          button: 'left',
+          x: coords.x,
+          y: coords.y
+        });
+      }
+      isTouchDragging = false;
+    }
   });
 
   // --- Keyboard Handling (Physical & Virtual) ---
@@ -617,6 +739,63 @@
     remoteVideo.play().catch(() => {});
   });
 
+  // Navigation Event Handlers
+  if (navBackBtn) {
+    navBackBtn.addEventListener('click', () => {
+      sendInput({ type: 'nav-back' });
+    });
+  }
+  if (navForwardBtn) {
+    navForwardBtn.addEventListener('click', () => {
+      sendInput({ type: 'nav-forward' });
+    });
+  }
+  if (navReloadBtn) {
+    navReloadBtn.addEventListener('click', () => {
+      sendInput({ type: 'nav-reload' });
+    });
+  }
+  if (navUrlForm) {
+    navUrlForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const url = navUrlInput.value.trim();
+      if (url) {
+        sendInput({ type: 'nav-url', url });
+      }
+    });
+  }
+  if (navCloseBtn) {
+    navCloseBtn.addEventListener('click', () => {
+      navToolbar.classList.toggle('collapsed');
+    });
+  }
+  if (navBarToggleBtn) {
+    navBarToggleBtn.addEventListener('click', () => {
+      if (navToolbar.style.display === 'none') {
+        navToolbar.style.display = 'flex';
+        navToolbar.classList.remove('collapsed');
+      } else {
+        navToolbar.classList.toggle('collapsed');
+      }
+    });
+  }
+
+  // Mobile Clipboard Paste & Send
+  if (mobilePasteBtn) {
+    mobilePasteBtn.addEventListener('click', async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+          mobileTextInput.value = text;
+          sendMobileText(text);
+          navigator.vibrate?.(20);
+        }
+      } catch (err) {
+        console.warn('Clipboard read notice:', err);
+      }
+    });
+  }
+
   // --- Session Cleanup ---
   function cleanupConnection() {
     if (pingInterval) clearInterval(pingInterval);
@@ -643,6 +822,12 @@
     audioNotice.style.display = 'none';
     mobileDock.style.display = 'none';
     mobileInputSheet.style.display = 'none';
+    if (navToolbar) {
+      navToolbar.style.display = 'none';
+      navToolbar.classList.remove('collapsed');
+    }
+    if (navBarToggleBtn) navBarToggleBtn.style.display = 'none';
+    resetZoom();
     if (remoteVideo.srcObject) {
       remoteVideo.srcObject.getTracks().forEach(t => t.stop());
       remoteVideo.srcObject = null;
