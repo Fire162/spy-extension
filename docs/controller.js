@@ -162,12 +162,27 @@
         console.log('Data connection opened to host:', targetPeerId);
         updateStatus('waiting', 'Awaiting authorization...');
         const deviceInfo = detectDeviceInfo();
-        conn.send({
-          type: 'auth',
-          pin: pin.trim(),
-          deviceInfo: deviceInfo,
-          clientId: deviceInfo
-        });
+
+        const sendAuth = (retryCount = 0) => {
+          if (!conn) return;
+          if (conn.open) {
+            try {
+              conn.send({
+                type: 'auth',
+                pin: pin.trim(),
+                deviceInfo: deviceInfo,
+                clientId: deviceInfo
+              });
+              console.log('Auth credentials dispatched to host');
+            } catch (err) {
+              console.warn('conn.send auth failed:', err);
+              if (retryCount < 10) setTimeout(() => sendAuth(retryCount + 1), 100);
+            }
+          } else if (retryCount < 10) {
+            setTimeout(() => sendAuth(retryCount + 1), 100);
+          }
+        };
+        sendAuth();
       });
 
       conn.on('data', (data) => {
@@ -179,8 +194,14 @@
       });
 
       conn.on('error', (err) => {
-        console.error('Connection error:', err);
-        handleSessionEnded('Connection error: ' + err.message);
+        console.warn('Data connection warning/error:', err);
+        const errMsg = (err && (err.message || err.type)) ? (err.message || err.type) : String(err);
+        // Do not abort session for transient NotOpenYet or connection-not-open warnings
+        if (err?.type === 'not-open-yet' || (typeof errMsg === 'string' && errMsg.toLowerCase().includes('not open'))) {
+          console.warn('Ignoring transient NotOpenYet event. Connection will proceed.');
+          return;
+        }
+        handleSessionEnded('Connection error: ' + errMsg);
       });
     });
 
@@ -370,7 +391,11 @@
     pingInterval = setInterval(() => {
       if (conn && conn.open) {
         lastPingTimestamp = performance.now();
-        conn.send({ type: 'ping', time: lastPingTimestamp });
+        try {
+          conn.send({ type: 'ping', time: lastPingTimestamp });
+        } catch (e) {
+          console.warn('Ping send notice:', e);
+        }
       }
     }, 2000);
   }
@@ -379,7 +404,11 @@
   function sendInput(payload) {
     if (!canControl) return;
     if (!conn || !conn.open) return;
-    conn.send(payload);
+    try {
+      conn.send(payload);
+    } catch (e) {
+      console.warn('sendInput notice:', e);
+    }
   }
 
   function getCoordinates(clientX, clientY) {
@@ -929,7 +958,9 @@
 
   disconnectBtn.addEventListener('click', () => {
     if (conn && conn.open) {
-      conn.send({ type: 'session-ended', reason: 'Controller disconnected' });
+      try {
+        conn.send({ type: 'session-ended', reason: 'Controller disconnected' });
+      } catch (e) {}
     }
     handleSessionEnded('You disconnected from the session.');
   });

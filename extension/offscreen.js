@@ -135,11 +135,13 @@ function updatePortionSettings(settings) {
         });
       }
       try {
-        client.conn.send({
-          type: 'portion-update',
-          portionEnabled: portionSettings.enabled,
-          portion: portionSettings
-        });
+        if (client.conn && client.conn.open) {
+          client.conn.send({
+            type: 'portion-update',
+            portionEnabled: portionSettings.enabled,
+            portion: portionSettings
+          });
+        }
       } catch (e) {}
     }
   }
@@ -382,13 +384,19 @@ async function handlePermissionDecision({ clientId, approved, canControl }) {
     const streamToShare = isPortion ? getCroppedStream() : mediaStream;
 
     console.log(`Host granted access to ${deviceInfo} (${clientId}). canControl: ${canControl}, isPortion: ${isPortion}`);
-    conn.send({
-      type: 'permission-result',
-      approved: true,
-      canControl: !!canControl,
-      portionEnabled: isPortion,
-      portion: isPortion ? portionSettings : null
-    });
+    if (conn && conn.open) {
+      try {
+        conn.send({
+          type: 'permission-result',
+          approved: true,
+          canControl: !!canControl,
+          portionEnabled: isPortion,
+          portion: isPortion ? portionSettings : null
+        });
+      } catch (e) {
+        console.warn('Failed to send permission-result:', e);
+      }
+    }
 
     let call = null;
     // Broadcast live media stream to this approved peer
@@ -413,11 +421,13 @@ async function handlePermissionDecision({ clientId, approved, canControl }) {
   } else {
     console.log(`Host denied access request from ${deviceInfo} (${clientId})`);
     try {
-      conn.send({
-        type: 'permission-result',
-        approved: false,
-        message: 'Access request was denied by the host.'
-      });
+      if (conn && conn.open) {
+        conn.send({
+          type: 'permission-result',
+          approved: false,
+          message: 'Access request was denied by the host.'
+        });
+      }
       conn.close();
     } catch (e) {}
     notifyClientListUpdate();
@@ -445,12 +455,14 @@ function updateClientRole({ clientId, canControl }) {
     }
 
     try {
-      client.conn.send({
-        type: 'role-update',
-        canControl: !!canControl,
-        portionEnabled: isPortion,
-        portion: isPortion ? portionSettings : null
-      });
+      if (client.conn && client.conn.open) {
+        client.conn.send({
+          type: 'role-update',
+          canControl: !!canControl,
+          portionEnabled: isPortion,
+          portion: isPortion ? portionSettings : null
+        });
+      }
     } catch (e) {}
     notifyClientListUpdate();
   }
@@ -461,10 +473,12 @@ function kickClient({ clientId }) {
   const client = connectedClients.get(clientId);
   if (client) {
     try {
-      client.conn.send({
-        type: 'session-ended',
-        reason: 'Host disconnected your device'
-      });
+      if (client.conn && client.conn.open) {
+        client.conn.send({
+          type: 'session-ended',
+          reason: 'Host disconnected your device'
+        });
+      }
       client.conn.close();
       if (client.call) client.call.close();
     } catch (e) {}
@@ -552,8 +566,10 @@ function stopSession(reason = 'Host ended session') {
   // Broadcast termination notice to all connected clients BEFORE closing connections
   for (const [clientId, client] of connectedClients) {
     try {
-      client.conn.send({ type: 'host-tab-closed', reason });
-      client.conn.send({ type: 'session-ended', reason });
+      if (client.conn && client.conn.open) {
+        client.conn.send({ type: 'host-tab-closed', reason });
+        client.conn.send({ type: 'session-ended', reason });
+      }
       client.conn.close();
       if (client.call) client.call.close();
     } catch (e) {}
@@ -563,8 +579,10 @@ function stopSession(reason = 'Host ended session') {
   // Close all pending unapproved clients
   for (const [clientId, pending] of pendingClients) {
     try {
-      pending.conn.send({ type: 'host-tab-closed', reason });
-      pending.conn.send({ type: 'session-ended', reason });
+      if (pending.conn && pending.conn.open) {
+        pending.conn.send({ type: 'host-tab-closed', reason });
+        pending.conn.send({ type: 'session-ended', reason });
+      }
       pending.conn.close();
     } catch (e) {}
   }
