@@ -249,6 +249,12 @@ input:checked + .slider::after {
   font-size: 11px;
 }
 
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .btn-primary {
   background-color: var(--primary);
   color: #fff;
@@ -453,6 +459,26 @@ input:checked + .slider::after {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  transition: opacity 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              max-height 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              margin 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              padding 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  max-height: 120px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.request-card.exiting {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.96);
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  border-width: 0;
+  pointer-events: none;
 }
 
 .request-device-row {

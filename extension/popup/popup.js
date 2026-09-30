@@ -149,21 +149,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  let activePendingRequests = [];
+
   // --- Render Pending Requests Queue ---
   function renderPendingRequests(requests) {
+    activePendingRequests = requests || [];
     requestsQueue.innerHTML = '';
-    pendingCountBadge.textContent = requests.length;
+    pendingCountBadge.textContent = activePendingRequests.length;
 
-    if (requests.length === 0) {
+    if (activePendingRequests.length === 0) {
       pendingSection.style.display = 'none';
       return;
     }
 
     pendingSection.style.display = 'flex';
 
-    requests.forEach(req => {
+    activePendingRequests.forEach(req => {
       const card = document.createElement('div');
       card.className = 'request-card';
+      card.id = `req-card-${req.clientId}`;
 
       const topRow = document.createElement('div');
       topRow.className = 'request-device-row';
@@ -185,22 +189,49 @@ document.addEventListener('DOMContentLoaded', async () => {
       const allowControlBtn = document.createElement('button');
       allowControlBtn.className = 'btn btn-success btn-sm';
       allowControlBtn.textContent = 'Allow Control';
-      allowControlBtn.addEventListener('click', () => {
-        decidePermission(req.clientId, true, true);
-      });
 
       const viewOnlyBtn = document.createElement('button');
       viewOnlyBtn.className = 'btn btn-outline btn-sm';
       viewOnlyBtn.textContent = 'View Only';
-      viewOnlyBtn.addEventListener('click', () => {
-        decidePermission(req.clientId, true, false);
-      });
 
       const denyBtn = document.createElement('button');
       denyBtn.className = 'btn btn-danger btn-sm';
       denyBtn.textContent = 'Deny';
+
+      const allBtns = [allowControlBtn, viewOnlyBtn, denyBtn];
+
+      const handleDecision = (approved, canControl, clickedBtn, statusText, actionLabel) => {
+        // 1. Instantly disable all buttons on this card to prevent duplicate submissions
+        allBtns.forEach(btn => btn.disabled = true);
+        clickedBtn.textContent = actionLabel;
+        timeText.textContent = statusText;
+
+        // 2. Animate dismissal and immediately update queue state
+        card.classList.add('exiting');
+        activePendingRequests = activePendingRequests.filter(r => r.clientId !== req.clientId);
+        pendingCountBadge.textContent = activePendingRequests.length;
+
+        setTimeout(() => {
+          if (card.parentNode) card.remove();
+          if (activePendingRequests.length === 0) {
+            pendingSection.style.display = 'none';
+          }
+        }, 220);
+
+        // 3. Dispatch permission decision to background service worker
+        decidePermission(req.clientId, approved, canControl);
+      };
+
+      allowControlBtn.addEventListener('click', () => {
+        handleDecision(true, true, allowControlBtn, 'Approved', 'Allowing...');
+      });
+
+      viewOnlyBtn.addEventListener('click', () => {
+        handleDecision(true, false, viewOnlyBtn, 'Approved', 'Connecting...');
+      });
+
       denyBtn.addEventListener('click', () => {
-        decidePermission(req.clientId, false, false);
+        handleDecision(false, false, denyBtn, 'Denied', 'Denying...');
       });
 
       actions.appendChild(allowControlBtn);
@@ -217,6 +248,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.runtime.sendMessage({
       type: 'DECIDE_PERMISSION',
       payload: { clientId, approved, canControl }
+    }, (res) => {
+      if (chrome.runtime.lastError) return;
+      if (res && Array.isArray(res.pendingRequests)) {
+        renderPendingRequests(res.pendingRequests);
+      }
     });
   }
 
@@ -368,6 +404,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       renderConnectedDevices(message.clients || []);
       const count = message.clients ? message.clients.length : 0;
       globalStatusPill.textContent = count > 0 ? `${count} STREAMING` : 'WAITING FOR GUEST';
+
+      // Auto-reconcile: If any device in connectedClients is still in activePendingRequests, dismiss it
+      if (message.clients && message.clients.length > 0 && activePendingRequests.length > 0) {
+        const connectedIds = new Set(message.clients.map(c => c.clientId));
+        const remaining = activePendingRequests.filter(r => !connectedIds.has(r.clientId));
+        if (remaining.length !== activePendingRequests.length) {
+          renderPendingRequests(remaining);
+        }
+      }
     } else if (message.type === 'CLIENT_DISCONNECTED') {
       chrome.runtime.sendMessage({ type: 'GET_SESSION_STATE' }, (state) => {
         if (state) renderState(state);
