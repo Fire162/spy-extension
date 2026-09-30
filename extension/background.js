@@ -451,6 +451,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const { clientId, approved, canControl } = message.payload;
       sessionState.pendingRequests = sessionState.pendingRequests.filter(r => r.clientId !== clientId);
 
+      // Clear any pending desktop notification for this client
+      try {
+        chrome.notifications.clear(`perm-request-${clientId}`);
+      } catch (e) {}
+
       // Forward host decision to offscreen document
       chrome.runtime.sendMessage({
         target: 'offscreen',
@@ -459,7 +464,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
 
       updateExtensionBadge();
-      sendResponse({ success: true });
+
+      // Broadcast updated pending requests to popup so request card disappears immediately
+      chrome.runtime.sendMessage({
+        type: 'PENDING_REQUESTS_UPDATED',
+        requests: sessionState.pendingRequests
+      }).catch(() => {});
+
+      sendResponse({ success: true, pendingRequests: sessionState.pendingRequests });
       return true;
     }
 
@@ -497,11 +509,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'CLIENT_DISCONNECTED': {
       sessionState.connectedClients = sessionState.connectedClients.filter(c => c.clientId !== message.clientId);
       sessionState.pendingRequests = sessionState.pendingRequests.filter(r => r.clientId !== message.clientId);
+      try {
+        chrome.notifications.clear(`perm-request-${message.clientId}`);
+      } catch (e) {}
       updateExtensionBadge();
+      chrome.runtime.sendMessage({
+        type: 'PENDING_REQUESTS_UPDATED',
+        requests: sessionState.pendingRequests
+      }).catch(() => {});
       chrome.runtime.sendMessage({
         type: 'CLIENT_DISCONNECTED',
         clientId: message.clientId
-      });
+      }).catch(() => {});
       break;
     }
 
