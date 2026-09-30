@@ -1,15 +1,16 @@
 /**
  * Spy Extension - Offscreen Document
- * Powered by open WebRTC P2P (PeerJS). Zero API keys, zero accounts.
+ * Powered by open WebRTC P2P (PeerJS).
+ * Strict Two-Party Mutual Consent & Full Teardown Lifecycle.
  */
 
 let mediaStream = null;
+let audioCtx = null;
 let peer = null;
 let activeConn = null;
 let activeCall = null;
 let currentRoomId = null;
 let currentPin = null;
-let currentAllowControl = true;
 
 function sanitizePeerId(raw) {
   return 'spy-' + raw.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -37,10 +38,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-async function startSession({ streamId, roomId, pin, allowControl }) {
+async function startSession({ streamId, roomId, pin }) {
+  // Always perform full teardown of any previous session first
+  stopSession();
+
   currentRoomId = roomId;
   currentPin = String(pin).trim();
-  currentAllowControl = !!allowControl;
 
   // 1. Capture Tab Audio & Video Media Stream
   try {
@@ -62,7 +65,7 @@ async function startSession({ streamId, roomId, pin, allowControl }) {
 
     // Route audio to host speakers so the host tab audio remains audible locally
     try {
-      const audioCtx = new AudioContext();
+      audioCtx = new AudioContext();
       const source = audioCtx.createMediaStreamSource(mediaStream);
       source.connect(audioCtx.destination);
     } catch (e) {
@@ -126,32 +129,26 @@ async function startSession({ streamId, roomId, pin, allowControl }) {
           return;
         }
 
+        // PIN verified! Do NOT grant access or stream yet.
+        // Mutual consent is mandatory: prompt host for approval.
         activeConn = conn;
-        console.log('Controller PIN verified. Granting permission:', currentAllowControl);
+        console.log('PIN verified. Awaiting explicit host permission decision...');
 
-        // Send permission decision to controller
-        activeConn.send({
-          type: 'permission-result',
-          approved: true,
-          canControl: currentAllowControl
+        conn.send({
+          type: 'auth-success',
+          status: 'waiting-for-approval',
+          message: 'PIN verified. Waiting for host approval...'
         });
 
-        // Call controller with media stream
-        if (mediaStream && peer) {
-          console.log('Calling controller with media stream:', activeConn.peer);
-          activeCall = peer.call(activeConn.peer, mediaStream);
-        }
-
-        // Notify background
+        // Notify background service worker and host popup
         chrome.runtime.sendMessage({
-          type: 'CONTROLLER_CONNECTED',
-          clientId: data.clientId || 'Remote Controller',
-          canControl: currentAllowControl
+          type: 'PERMISSION_REQUEST',
+          clientId: data.clientId || 'Remote Controller'
         });
       } else if (data.type === 'ping') {
         conn.send({ type: 'pong', time: data.time });
       } else if (data.type && data.type.startsWith('input-')) {
-        // Forward input event to service worker for CDP execution
+        // Forward input event to service worker for execution
         chrome.runtime.sendMessage({
           type: 'EXECUTE_INPUT',
           input: data
@@ -178,35 +175,58 @@ async function startSession({ streamId, roomId, pin, allowControl }) {
   });
 }
 
-// Host clicked Change Permissions in popup
+// Host clicked Approve (Control or View Only) or Deny
 async function handlePermissionDecision({ approved, canControl }) {
-  currentAllowControl = approved && canControl;
   if (!activeConn) return;
 
-  activeConn.send({
-    type: 'permission-result',
-    approved,
-    canControl: currentAllowControl
-  });
-}
+  if (approved) {
+    console.log('Host granted permission. canControl:', canControl);
+    activeConn.send({
+      type: 'permission-result',
+      approved: true,
+      canControl: !!canControl
+    });
 
-function stopSession() {
-  if (activeConn) {
-    activeConn.send({ type: 'session-ended', reason: 'Host closed session' });
+    // Start streaming media only AFTER host clicked approve
+    if (mediaStream && peer) {
+      console.log('Calling controller with media stream:', activeConn.peer);
+      activeCall = peer.call(activeConn.peer, mediaStream);
+    }
+  } else {
+    console.log('Host denied access request.');
+    activeConn.send({
+      type: 'permission-result',
+      approved: false,
+      message: 'Access request was denied by the host.'
+    });
     activeConn.close();
     activeConn = null;
   }
-  if (activeCall) {
-    activeCall.close();
-    activeCall = null;
-  }
-  if (peer) {
-    peer.destroy();
-    peer = null;
+}
+
+function stopSession() {
+  if (audioCtx) {
+    try { audioCtx.close(); } catch (e) {}
+    audioCtx = null;
   }
   if (mediaStream) {
     mediaStream.getTracks().forEach(t => t.stop());
     mediaStream = null;
+  }
+  if (activeCall) {
+    try { activeCall.close(); } catch (e) {}
+    activeCall = null;
+  }
+  if (activeConn) {
+    try {
+      activeConn.send({ type: 'session-ended', reason: 'Host closed session' });
+      activeConn.close();
+    } catch (e) {}
+    activeConn = null;
+  }
+  if (peer) {
+    try { peer.destroy(); } catch (e) {}
+    peer = null;
   }
   currentRoomId = null;
   currentPin = null;

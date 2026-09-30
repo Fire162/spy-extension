@@ -188,6 +188,16 @@
 
   function handleIncomingData(data) {
     switch (data.type) {
+      case 'auth-success':
+        updateStatus('waiting', 'Awaiting host approval...');
+        const waitingTitle = document.getElementById('waitingTitle');
+        const waitingDesc = document.getElementById('waitingDesc');
+        if (waitingTitle) waitingTitle.textContent = 'PIN Verified';
+        if (waitingDesc) {
+          waitingDesc.textContent = 'Waiting for the host to click "Allow Control" or "View Only" in their extension...';
+        }
+        break;
+
       case 'auth-failed':
         joinErrorMsg.textContent = data.error || 'Incorrect PIN';
         waitingModal.style.display = 'none';
@@ -421,13 +431,24 @@
     lastTouchY = touch.clientY;
   }, { passive: false });
 
+  function showTouchRipple(clientX, clientY) {
+    const ripple = document.createElement('div');
+    ripple.className = 'touch-ripple';
+    const rect = streamWrapper.getBoundingClientRect();
+    ripple.style.left = (clientX - rect.left) + 'px';
+    ripple.style.top = (clientY - rect.top) + 'px';
+    streamWrapper.appendChild(ripple);
+    setTimeout(() => ripple.remove(), 400);
+  }
+
   remoteVideo.addEventListener('touchend', (e) => {
     if (!canControl) return;
     const elapsed = performance.now() - touchStartTime;
 
     // Quick tap without significant movement = Click
-    if (!isTouchDragging && elapsed < 400) {
+    if (!isTouchDragging && elapsed < 450) {
       const coords = getCoordinates(touchStartX, touchStartY);
+      showTouchRipple(touchStartX, touchStartY);
       navigator.vibrate?.(25);
       sendInput({
         type: 'input-mouse',

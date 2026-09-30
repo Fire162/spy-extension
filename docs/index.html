@@ -146,9 +146,12 @@
       <div class="modal-overlay" id="waitingModal" style="display: none;">
         <div class="modal-card modal-waiting">
           <div class="spinner"></div>
-          <h3>Connecting to Session</h3>
-          <p>Verifying PIN and establishing peer-to-peer audio & video stream...</p>
-          <button id="cancelJoinBtn" class="btn btn-outline" style="margin-top: 16px;">Cancel</button>
+          <h3 id="waitingTitle">PIN Verified</h3>
+          <p id="waitingDesc">Waiting for the host to click "Allow Control" or "View Only" in their extension...</p>
+          <div class="waiting-tip" style="margin-top: 12px; font-size: 11px; color: var(--accent); background: rgba(56, 189, 248, 0.1); padding: 8px 12px; border-radius: 6px;">
+            💡 Strict mutual consent: Stream will only start after host clicks Approve.
+          </div>
+          <button id="cancelJoinBtn" class="btn btn-outline" style="margin-top: 16px;">Cancel Request</button>
         </div>
       </div>
 

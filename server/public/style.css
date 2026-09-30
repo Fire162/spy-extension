@@ -168,6 +168,8 @@ body {
   justify-content: center;
   background-color: #030712;
   overflow: hidden;
+  touch-action: none;
+  overscroll-behavior: none;
 }
 
 .stream-wrapper {
@@ -178,6 +180,10 @@ body {
   align-items: center;
   justify-content: center;
   cursor: crosshair;
+  touch-action: none;
+  overscroll-behavior: none;
+  -webkit-touch-callout: none;
+  user-select: none;
 }
 
 #remoteVideo {
@@ -187,6 +193,28 @@ body {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
   border: 1px solid #1f2937;
   user-select: none;
+  touch-action: none;
+  -webkit-user-drag: none;
+}
+
+.touch-ripple {
+  position: absolute;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  background: rgba(56, 189, 248, 0.35);
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(0.4);
+  animation: ripple 0.35s ease-out forwards;
+  z-index: 25;
+}
+
+@keyframes ripple {
+  to {
+    transform: translate(-50%, -50%) scale(1.6);
+    opacity: 0;
+  }
 }
 
 /* Modals */

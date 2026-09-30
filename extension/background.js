@@ -1,6 +1,7 @@
 /**
  * Spy Extension - Background Service Worker
  * Coordinates Offscreen Document, Tab Capture, and Chrome DevTools Protocol (Debugger) Input Injection.
+ * Enforces Strict Two-Party Mutual Consent & Zero Cross-Tab State Leaks.
  */
 
 const OFFSCREEN_DOCUMENT_PATH = 'offscreen.html';
@@ -201,7 +202,6 @@ async function handleInputEvent(input) {
         windowsVirtualKeyCode: input.keyCode || 0
       });
 
-      // If printable character keydown, also send char event
       if (isDown && input.key && input.key.length === 1) {
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
           type: 'char',
@@ -228,10 +228,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             throw new Error('Chrome security prohibits remote control on chrome:// and extension store pages. Please share a standard website (e.g. google.com, wikipedia.org, github.com).');
           }
 
+          // Full cleanup of any previous session to prevent cross-tab leaks
+          if (sessionState.active) {
+            if (sessionState.tabId) {
+              await detachDebugger(sessionState.tabId);
+            }
+            chrome.runtime.sendMessage({ target: 'offscreen', type: 'STOP_SESSION' });
+            await closeOffscreenDocument();
+          }
+
           sessionState.tabId = tabId;
           sessionState.roomId = roomId;
           sessionState.pin = pin;
-          sessionState.canControl = allowControl;
+          sessionState.canControl = false; // Never grant control until host explicitly confirms request!
+          sessionState.pendingRequest = null;
           sessionState.active = true;
 
           // 1. Get tab capture stream ID
@@ -243,12 +253,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // 3. Attach Chrome debugger for input dispatch
           await attachDebugger(tabId);
 
-          // 4. Instruct offscreen document to initiate streaming
+          // 4. Instruct offscreen document to initiate session
           chrome.runtime.sendMessage({
             target: 'offscreen',
             type: 'START_SESSION',
             payload: { streamId, roomId, pin, allowControl }
           });
+
+          chrome.action.setBadgeText({ text: 'WAIT' });
+          chrome.action.setBadgeBackgroundColor({ color: '#3b82f6' });
 
           sendResponse({ success: true });
         } catch (err) {
@@ -264,10 +277,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
 
-    case 'CONTROLLER_CONNECTED': {
-      sessionState.canControl = !!message.canControl;
-      chrome.action.setBadgeText({ text: sessionState.canControl ? 'CTRL' : 'VIEW' });
-      chrome.action.setBadgeBackgroundColor({ color: '#10b981' });
+    case 'PERMISSION_REQUEST': {
+      // Remote controller entered valid PIN and is knocking on the door
+      sessionState.pendingRequest = { clientId: message.clientId };
+      chrome.action.setBadgeText({ text: 'REQ' });
+      chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
+
+      // Native desktop notification for instant awareness
+      try {
+        chrome.notifications.create('perm-request-notice', {
+          type: 'basic',
+          iconUrl: 'icons/icon128.png',
+          title: 'Spy Extension - Remote Access Request',
+          message: `${message.clientId || 'A remote user'} requested access to this tab. Click the extension icon to Approve or Deny.`,
+          priority: 2
+        });
+      } catch (e) {}
       break;
     }
 
@@ -275,10 +300,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const { approved, canControl } = message.payload;
       sessionState.canControl = approved && canControl;
       sessionState.pendingRequest = null;
-      chrome.action.setBadgeText({ text: approved ? (sessionState.canControl ? 'CTRL' : 'VIEW') : '' });
-      chrome.action.setBadgeBackgroundColor({ color: '#10b981' });
 
-      // Forward decision to offscreen document
+      if (approved) {
+        chrome.action.setBadgeText({ text: sessionState.canControl ? 'CTRL' : 'VIEW' });
+        chrome.action.setBadgeBackgroundColor({ color: '#10b981' });
+      } else {
+        chrome.action.setBadgeText({ text: 'DENY' });
+        chrome.action.setBadgeBackgroundColor({ color: '#6b7280' });
+      }
+
+      // Forward host decision to offscreen document
       chrome.runtime.sendMessage({
         target: 'offscreen',
         type: 'PERMISSION_DECISION',
@@ -306,6 +337,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         sessionState.active = false;
         sessionState.tabId = null;
+        sessionState.canControl = false;
         sessionState.pendingRequest = null;
         chrome.action.setBadgeText({ text: '' });
         sendResponse({ success: true });
@@ -315,6 +347,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'CONTROLLER_DISCONNECTED': {
       sessionState.canControl = false;
+      sessionState.pendingRequest = null;
       chrome.action.setBadgeText({ text: 'IDLE' });
       chrome.action.setBadgeBackgroundColor({ color: '#6b7280' });
       break;
