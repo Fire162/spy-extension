@@ -22,6 +22,8 @@
   const latencyText = document.getElementById('latencyText');
   const modeBadge = document.getElementById('modeBadge');
   const modeText = document.getElementById('modeText');
+  const screenFitBtn = document.getElementById('screenFitBtn');
+  const screenFitIcon = document.getElementById('screenFitIcon');
   const fullscreenBtn = document.getElementById('fullscreenBtn');
   const disconnectBtn = document.getElementById('disconnectBtn');
   const reconnectBtn = document.getElementById('reconnectBtn');
@@ -70,6 +72,7 @@
   let currentRoomId = null;
   let canControl = false;
   let activePortion = null;
+  let screenScaleMode = 'fill'; // 'fill' (no black bars, full screen) or 'fit' (maintain ratio)
   let pingInterval = null;
   let lastPingTimestamp = 0;
   let isMuted = false;
@@ -308,6 +311,7 @@
           modeBadge.style.display = 'inline-block';
           disconnectBtn.style.display = 'inline-flex';
           fullscreenBtn.style.display = 'inline-flex';
+          if (screenFitBtn) screenFitBtn.style.display = 'inline-flex';
 
           activePortion = (!canControl && data.portionEnabled) ? data.portion : null;
           updatePortionDisplay();
@@ -533,9 +537,45 @@
 
   // --- Portion Crop Viewport Display (View-Only Mode) ---
   function updatePortionDisplay() {
+    if (!remoteVideo) return;
+
     if (!activePortion || canControl) {
       if (portionBadge) portionBadge.style.display = 'none';
-      remoteVideo.style.clipPath = '';
+
+      if (screenScaleMode === 'fill') {
+        streamWrapper.style.width = '100%';
+        streamWrapper.style.height = '100%';
+        streamWrapper.style.maxWidth = '100%';
+        streamWrapper.style.maxHeight = '100%';
+        streamWrapper.style.overflow = 'hidden';
+
+        remoteVideo.style.position = 'relative';
+        remoteVideo.style.width = '100%';
+        remoteVideo.style.height = '100%';
+        remoteVideo.style.maxWidth = '100%';
+        remoteVideo.style.maxHeight = '100%';
+        remoteVideo.style.objectFit = 'cover';
+        remoteVideo.style.left = '0';
+        remoteVideo.style.top = '0';
+        remoteVideo.style.clipPath = '';
+      } else {
+        streamWrapper.style.width = '';
+        streamWrapper.style.height = '';
+        streamWrapper.style.maxWidth = '100%';
+        streamWrapper.style.maxHeight = '100%';
+        streamWrapper.style.overflow = 'hidden';
+
+        remoteVideo.style.position = 'relative';
+        remoteVideo.style.width = '';
+        remoteVideo.style.height = '';
+        remoteVideo.style.maxWidth = '100%';
+        remoteVideo.style.maxHeight = '100%';
+        remoteVideo.style.objectFit = 'contain';
+        remoteVideo.style.left = '0';
+        remoteVideo.style.top = '0';
+        remoteVideo.style.clipPath = '';
+      }
+
       if (currentZoom <= 1.02) {
         remoteVideo.style.transform = '';
         remoteVideo.style.transformOrigin = '';
@@ -545,6 +585,7 @@
       return;
     }
 
+    // Portion Crop Active (View-Only Mode)
     if (portionBadge) {
       portionBadge.style.display = 'inline-flex';
       const w = activePortion.width || 100;
@@ -558,20 +599,51 @@
     const w = Math.max(5, Math.min(100 - x, activePortion.width || 100));
     const h = Math.max(5, Math.min(100 - y, activePortion.height || 100));
 
-    const top = y;
-    const right = 100 - (x + w);
-    const bottom = 100 - (y + h);
-    const left = x;
+    streamWrapper.style.width = '100%';
+    streamWrapper.style.height = '100%';
+    streamWrapper.style.maxWidth = '100%';
+    streamWrapper.style.maxHeight = '100%';
+    streamWrapper.style.overflow = 'hidden';
 
-    const scale = Math.min(100 / w, 100 / h);
-    const centerX = x + w / 2;
-    const centerY = y + h / 2;
+    if (screenScaleMode === 'fill') {
+      // 100% Fill Screen: Selected portion expands to cover 100% of viewer's screen (ZERO black bars)
+      remoteVideo.style.position = 'absolute';
+      remoteVideo.style.maxWidth = 'none';
+      remoteVideo.style.maxHeight = 'none';
+      remoteVideo.style.objectFit = 'fill';
+      remoteVideo.style.width = `${(10000 / w).toFixed(2)}%`;
+      remoteVideo.style.height = `${(10000 / h).toFixed(2)}%`;
+      remoteVideo.style.left = `${-(x / w * 100).toFixed(2)}%`;
+      remoteVideo.style.top = `${-(y / h * 100).toFixed(2)}%`;
+      remoteVideo.style.clipPath = '';
+      remoteVideo.style.transformOrigin = '50% 50%';
+      remoteVideo.style.transform = currentZoom > 1.0 ? `scale(${currentZoom}) translate(${panX}px, ${panY}px)` : '';
+      remoteVideo.style.transition = 'all 0.25s ease-out';
+    } else {
+      // Fit Mode: Maintain exact original aspect ratio of cropped portion
+      const top = y;
+      const right = 100 - (x + w);
+      const bottom = 100 - (y + h);
+      const left = x;
 
-    remoteVideo.style.transformOrigin = `${centerX}% ${centerY}%`;
-    const finalScale = scale * currentZoom;
-    remoteVideo.style.transform = `scale(${finalScale.toFixed(3)}) translate(${panX}px, ${panY}px)`;
-    remoteVideo.style.clipPath = `inset(${top}% ${right}% ${bottom}% ${left}%)`;
-    remoteVideo.style.transition = 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), clip-path 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
+      const scale = Math.min(100 / w, 100 / h);
+      const centerX = x + w / 2;
+      const centerY = y + h / 2;
+
+      remoteVideo.style.position = 'relative';
+      remoteVideo.style.width = '100%';
+      remoteVideo.style.height = '100%';
+      remoteVideo.style.maxWidth = '100%';
+      remoteVideo.style.maxHeight = '100%';
+      remoteVideo.style.objectFit = 'contain';
+      remoteVideo.style.left = '0';
+      remoteVideo.style.top = '0';
+      remoteVideo.style.transformOrigin = `${centerX}% ${centerY}%`;
+      const finalScale = scale * currentZoom;
+      remoteVideo.style.transform = `scale(${finalScale.toFixed(3)}) translate(${panX}px, ${panY}px)`;
+      remoteVideo.style.clipPath = `inset(${top}% ${right}% ${bottom}% ${left}%)`;
+      remoteVideo.style.transition = 'transform 0.25s ease-out, clip-path 0.25s ease-out';
+    }
   }
 
   // --- Pinch-to-Zoom & Pan Logic ---
@@ -959,6 +1031,7 @@
     modeBadge.style.display = 'none';
     disconnectBtn.style.display = 'none';
     fullscreenBtn.style.display = 'none';
+    if (screenFitBtn) screenFitBtn.style.display = 'none';
     audioToggleBtn.style.display = 'none';
     audioNotice.style.display = 'none';
     mobileDock.style.display = 'none';
@@ -1018,6 +1091,17 @@
     disconnectNotice.style.display = 'none';
     joinModal.style.display = 'flex';
   });
+
+  if (screenFitBtn) {
+    screenFitBtn.addEventListener('click', () => {
+      screenScaleMode = screenScaleMode === 'fill' ? 'fit' : 'fill';
+      if (screenFitIcon) {
+        screenFitIcon.textContent = screenScaleMode === 'fill' ? '🔲' : '📐';
+      }
+      screenFitBtn.title = screenScaleMode === 'fill' ? 'Screen Mode: Fill (No Black Bars)' : 'Screen Mode: Fit (Maintain Ratio)';
+      updatePortionDisplay();
+    });
+  }
 
   fullscreenBtn.addEventListener('click', () => {
     if (!document.fullscreenElement) {
