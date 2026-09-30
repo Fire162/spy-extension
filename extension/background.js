@@ -320,6 +320,9 @@ async function stopHostSession(reason = 'completed') {
 
   if (sessionState.tabId) {
     try {
+      chrome.tabs.sendMessage(sessionState.tabId, { type: 'STOP_PORTION_TRACKER' }).catch(() => {});
+    } catch (e) {}
+    try {
       await chrome.debugger.sendCommand({ tabId: sessionState.tabId }, 'Runtime.evaluate', {
         expression: `(() => { const el = document.getElementById('__spy_laser__'); if (el) el.remove(); })()`
       }).catch(() => {});
@@ -532,6 +535,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'UPDATE_PORTION_SETTINGS': {
       sessionState.portionSettings = { ...sessionState.portionSettings, ...message.payload };
       chrome.storage.local.set({ defaultPortionSettings: sessionState.portionSettings }).catch(() => {});
+      if (message.payload && message.payload.enabled === false && sessionState.tabId) {
+        chrome.tabs.sendMessage(sessionState.tabId, { type: 'STOP_PORTION_TRACKER' }).catch(() => {});
+      }
       if (sessionState.active) {
         chrome.runtime.sendMessage({
           target: 'offscreen',
@@ -576,8 +582,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sessionState.portionSettings = {
         ...sessionState.portionSettings,
         ...message.payload,
-        enabled: true,
-        preset: 'custom'
+        enabled: true
       };
       chrome.storage.local.set({ defaultPortionSettings: sessionState.portionSettings }).catch(() => {});
       if (sessionState.active) {

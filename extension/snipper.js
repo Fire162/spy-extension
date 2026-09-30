@@ -368,6 +368,8 @@
   let isResizing = false;
   let isPicking = false;
   let hoveredElement = null;
+  let selectedTrackedElement = null;
+  let selectedTrackedSelector = null;
   let resizeDir = '';
   let startX = 0, startY = 0;
   let moveOffsetX = 0, moveOffsetY = 0;
@@ -375,6 +377,151 @@
 
   const btnSnapMain = topBanner.querySelector('#btnSnapMain');
   const btnPickElement = topBanner.querySelector('#btnPickElement');
+
+  function getElementSelector(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return null;
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'main') return 'main';
+    if (el.getAttribute('role') === 'main') return '[role="main"]';
+    if (tag === 'article') return 'article';
+
+    const parts = [];
+    let cur = el;
+    while (cur && cur.nodeType === Node.ELEMENT_NODE && cur !== document.documentElement && cur !== document.body) {
+      let segment = cur.tagName.toLowerCase();
+      if (cur.id) {
+        segment = `#${CSS.escape(cur.id)}`;
+        parts.unshift(segment);
+        break;
+      }
+      if (cur.className && typeof cur.className === 'string') {
+        const classes = cur.className.trim().split(/\s+/).filter(Boolean);
+        if (classes.length) {
+          segment += '.' + classes.slice(0, 2).map(c => CSS.escape(c)).join('.');
+        }
+      }
+      const parent = cur.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(c => c.tagName === cur.tagName);
+        if (siblings.length > 1) {
+          const idx = siblings.indexOf(cur) + 1;
+          segment += `:nth-of-type(${idx})`;
+        }
+      }
+      parts.unshift(segment);
+      cur = parent;
+    }
+    return parts.join(' > ') || null;
+  }
+
+  function startDynamicElementTracker(targetEl, selector) {
+    if (window.__spyPortionTracker) {
+      window.__spyPortionTracker.stop();
+    }
+
+    let element = targetEl;
+    let lastRect = {
+      x: Math.max(0, Math.min(95, Math.round((currentRect.left / window.innerWidth) * 100))),
+      y: Math.max(0, Math.min(95, Math.round((currentRect.top / window.innerHeight) * 100))),
+      width: Math.max(5, Math.min(100, Math.round((currentRect.width / window.innerWidth) * 100))),
+      height: Math.max(5, Math.min(100, Math.round((currentRect.height / window.innerHeight) * 100)))
+    };
+
+    function checkAndSync() {
+      // Re-query if element was detached or replaced (e.g. SPA navigation / dynamic DOM re-render)
+      if (!element || !document.contains(element)) {
+        if (selector) {
+          try {
+            const reFound = document.querySelector(selector);
+            if (reFound) {
+              element = reFound;
+              if (ro) {
+                ro.disconnect();
+                ro.observe(element);
+              }
+            } else {
+              return;
+            }
+          } catch (e) {
+            return;
+          }
+        } else {
+          return;
+        }
+      }
+
+      const r = element.getBoundingClientRect();
+      if (r.width < 10 || r.height < 10) return;
+
+      const x = Math.max(0, Math.min(95, Math.round((r.left / window.innerWidth) * 100)));
+      const y = Math.max(0, Math.min(95, Math.round((r.top / window.innerHeight) * 100)));
+      const width = Math.max(5, Math.min(100 - x, Math.round((r.width / window.innerWidth) * 100)));
+      const height = Math.max(5, Math.min(100 - y, Math.round((r.height / window.innerHeight) * 100)));
+
+      // If dimensions or position shifted, send updated crop to background & remote viewers
+      if (x !== lastRect.x || y !== lastRect.y || width !== lastRect.width || height !== lastRect.height) {
+        lastRect = { x, y, width, height };
+        try {
+          chrome.runtime.sendMessage({
+            type: 'UPDATE_PORTION_SETTINGS',
+            payload: {
+              enabled: true,
+              preset: 'element',
+              x,
+              y,
+              width,
+              height,
+              isElementTracked: true,
+              selector: selector
+            }
+          });
+        } catch (err) {
+          stop();
+        }
+      }
+    }
+
+    // Periodic check every 10 seconds (as requested)
+    const intervalId = setInterval(checkAndSync, 10000);
+
+    // Instant check whenever window is resized
+    const onResize = () => checkAndSync();
+    window.addEventListener('resize', onResize);
+
+    // Instant check whenever element resizes or layout shifts (ResizeObserver)
+    let ro = null;
+    if (typeof ResizeObserver !== 'undefined' && element) {
+      try {
+        ro = new ResizeObserver(() => checkAndSync());
+        ro.observe(element);
+      } catch (e) {}
+    }
+
+    function stop() {
+      clearInterval(intervalId);
+      window.removeEventListener('resize', onResize);
+      if (ro) ro.disconnect();
+      window.__spyPortionTracker = null;
+    }
+
+    window.__spyPortionTracker = { stop, checkAndSync, targetEl: element, selector };
+  }
+
+  window.__spyStartElementTracker = startDynamicElementTracker;
+
+  if (!window.__spyPortionTrackerListenerSet) {
+    window.__spyPortionTrackerListenerSet = true;
+    try {
+      chrome.runtime.onMessage.addListener((message) => {
+        if (message.type === 'STOP_PORTION_TRACKER') {
+          if (window.__spyPortionTracker) {
+            window.__spyPortionTracker.stop();
+          }
+        }
+      });
+    } catch (e) {}
+  }
 
   function showToast(text, duration = 1500) {
     const old = shadow.querySelector('.snip-toast');
@@ -433,6 +580,8 @@
     const found = findMainElement();
     if (found) {
       const { el, rect } = found;
+      selectedTrackedElement = el;
+      selectedTrackedSelector = getElementSelector(el) || 'main';
       currentRect = {
         left: Math.max(0, rect.left),
         top: Math.max(0, rect.top),
@@ -443,7 +592,7 @@
       finishDrawing();
       const tag = el.tagName.toLowerCase();
       const id = el.id ? `#${el.id}` : '';
-      showToast(`🎯 Snapped to <${tag}${id}>`);
+      showToast(`🎯 Snapped to <${tag}${id}> (Auto-Tracking enabled)`);
     } else {
       showToast('⚠️ No <main> or article element detected on page');
     }
@@ -504,19 +653,28 @@
     const width = Math.max(5, Math.min(100 - x, Math.round((currentRect.width / window.innerWidth) * 100)));
     const height = Math.max(5, Math.min(100 - y, Math.round((currentRect.height / window.innerHeight) * 100)));
 
+    if (selectedTrackedElement) {
+      startDynamicElementTracker(selectedTrackedElement, selectedTrackedSelector);
+    } else if (window.__spyPortionTracker) {
+      window.__spyPortionTracker.stop();
+    }
+
     chrome.runtime.sendMessage({
       type: 'APPLY_SCREEN_PORTION',
       payload: {
         enabled: true,
-        preset: 'custom',
+        preset: selectedTrackedElement ? 'element' : 'custom',
         x,
         y,
         width,
-        height
+        height,
+        isElementTracked: !!selectedTrackedElement,
+        selector: selectedTrackedSelector
       }
     });
 
-    showToast(`🔒 Portion Applied: ${width}% × ${height}% (X: ${x}%, Y: ${y}%)`, 1000);
+    const trackNote = selectedTrackedElement ? ' (Dynamic Auto-Tracking)' : '';
+    showToast(`🔒 Portion Applied: ${width}% × ${height}%${trackNote}`, 1200);
 
     setTimeout(() => {
       cleanup();
@@ -537,6 +695,8 @@
 
     if (isPicking) {
       if (hoveredElement) {
+        selectedTrackedElement = hoveredElement;
+        selectedTrackedSelector = getElementSelector(hoveredElement);
         const r = hoveredElement.getBoundingClientRect();
         currentRect = {
           left: Math.max(0, r.left),
@@ -547,7 +707,7 @@
         updateBoxDOM();
         finishDrawing();
         const tag = hoveredElement.tagName.toLowerCase();
-        showToast(`🎯 Selected <${tag}> element`);
+        showToast(`🎯 Selected <${tag}> (Auto-Tracking enabled)`);
       }
       togglePickerMode(false);
       e.stopPropagation();
@@ -558,6 +718,8 @@
 
     // Check if clicked a resize handle
     if (target.classList && target.classList.contains('handle')) {
+      selectedTrackedElement = null;
+      selectedTrackedSelector = null;
       isResizing = true;
       resizeDir = target.dataset.direction;
       startX = e.clientX;
@@ -568,6 +730,8 @@
 
     // Check if clicked inside existing box to move it
     if (target === snipBox || snipBox.contains(target)) {
+      selectedTrackedElement = null;
+      selectedTrackedSelector = null;
       isMoving = true;
       moveOffsetX = e.clientX - currentRect.left;
       moveOffsetY = e.clientY - currentRect.top;
@@ -576,6 +740,8 @@
     }
 
     // Otherwise start fresh selection drag
+    selectedTrackedElement = null;
+    selectedTrackedSelector = null;
     isDrawing = true;
     startX = e.clientX;
     startY = e.clientY;
@@ -676,6 +842,8 @@
   shadow.querySelector('.btn-apply').addEventListener('click', applySelection);
 
   shadow.querySelector('.btn-redraw').addEventListener('click', () => {
+    selectedTrackedElement = null;
+    selectedTrackedSelector = null;
     currentRect = { left: 0, top: 0, width: 0, height: 0 };
     snipBox.style.display = 'none';
     actionBar.style.display = 'none';

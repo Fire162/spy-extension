@@ -130,7 +130,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (activePortionDetails && activePortionTag) {
       if (settings.enabled) {
         activePortionDetails.style.display = 'block';
-        const presetLabel = settings.preset === 'custom' ? 'Custom Snip' : (settings.preset || 'Portion');
+        const presetLabel = settings.isElementTracked
+          ? '🎯 Auto-Tracked Element'
+          : (settings.preset === 'custom' ? 'Custom Snip' : (settings.preset === 'element' ? '🎯 Auto-Tracked Element' : (settings.preset || 'Portion')));
         activePortionTag.textContent = `${presetLabel} (${settings.width || 100}% × ${settings.height || 50}%)`;
       } else {
         activePortionDetails.style.display = 'none';
@@ -269,11 +271,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (el) {
                   const r = el.getBoundingClientRect();
                   if (r.width >= 100 && r.height >= 80) {
+                    if (typeof window.__spyStartElementTracker === 'function') {
+                      window.__spyStartElementTracker(el, sel);
+                    }
                     return {
                       x: Math.max(0, Math.min(95, Math.round((r.left / window.innerWidth) * 100))),
                       y: Math.max(0, Math.min(95, Math.round((r.top / window.innerHeight) * 100))),
                       w: Math.max(5, Math.min(100 - Math.round((r.left / window.innerWidth) * 100), Math.round((r.width / window.innerWidth) * 100))),
-                      h: Math.max(5, Math.min(100 - Math.round((r.top / window.innerHeight) * 100), Math.round((r.height / window.innerHeight) * 100)))
+                      h: Math.max(5, Math.min(100 - Math.round((r.top / window.innerHeight) * 100), Math.round((r.height / window.innerHeight) * 100))),
+                      isElementTracked: true,
+                      selector: sel
                     };
                   }
                 }
@@ -291,7 +298,13 @@ document.addEventListener('DOMContentLoaded', async () => {
               portionX.value = 0; portionY.value = 0; portionW.value = 100; portionH.value = 70;
             }
             updatePortionPreview();
-            sendPortionUpdate();
+            const s = getPortionSettings();
+            s.isElementTracked = true;
+            s.preset = 'element';
+            chrome.runtime.sendMessage({
+              type: 'UPDATE_PORTION_SETTINGS',
+              payload: s
+            });
           }).catch(() => {
             portionX.value = 0; portionY.value = 0; portionW.value = 100; portionH.value = 70;
             updatePortionPreview();
@@ -302,6 +315,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           portionX.value = 0; portionY.value = 0; portionW.value = 100; portionH.value = 70;
         }
       }
+
+      if (val !== 'mainContent' && currentTab && currentTab.id) {
+        chrome.tabs.sendMessage(currentTab.id, { type: 'STOP_PORTION_TRACKER' }).catch(() => {});
+      }
+
       updatePortionPreview();
       sendPortionUpdate();
     });
