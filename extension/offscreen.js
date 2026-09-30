@@ -1,21 +1,18 @@
 /**
  * Spy Extension - Offscreen Document
- * Handles tab audio/video capture, WebRTC PeerConnection, and DataChannel input relay.
+ * Powered by open WebRTC P2P (PeerJS). Zero API keys, zero accounts.
  */
 
 let mediaStream = null;
-let peerConnection = null;
-let dataChannel = null;
-let ws = null;
+let peer = null;
+let activeConn = null;
+let activeCall = null;
 let currentRoomId = null;
 let currentPin = null;
 
-const rtcConfig = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
-  ]
-};
+function sanitizePeerId(raw) {
+  return 'spy-' + raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== 'offscreen') return;
@@ -39,9 +36,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-async function startSession({ streamId, roomId, pin, serverUrl }) {
+async function startSession({ streamId, roomId, pin }) {
   currentRoomId = roomId;
-  currentPin = pin;
+  currentPin = String(pin).trim();
 
   // 1. Capture Tab Media Stream
   try {
@@ -54,6 +51,7 @@ async function startSession({ streamId, roomId, pin, serverUrl }) {
         }
       }
     });
+    console.log('Tab media stream captured successfully');
   } catch (err) {
     console.error('Failed to get tab media stream:', err);
     chrome.runtime.sendMessage({
@@ -63,181 +61,110 @@ async function startSession({ streamId, roomId, pin, serverUrl }) {
     return;
   }
 
-  // 2. Connect to Signaling Server
-  const wsUrl = serverUrl || 'ws://localhost:3000';
-  try {
-    ws = new WebSocket(wsUrl);
-  } catch (err) {
-    console.error('Failed to connect to signaling server:', err);
-    chrome.runtime.sendMessage({
-      type: 'SESSION_ERROR',
-      error: 'Cannot connect to signaling server at ' + wsUrl
-    });
-    return;
-  }
+  // 2. Initialize WebRTC Host Peer
+  const hostPeerId = sanitizePeerId(roomId);
+  console.log('Initializing PeerJS host with ID:', hostPeerId);
 
-  ws.onopen = () => {
-    // Register as host
-    ws.send(JSON.stringify({
-      type: 'create-room',
-      roomId: currentRoomId,
-      pin: currentPin
-    }));
-  };
-
-  ws.onmessage = async (event) => {
-    let msg;
-    try {
-      msg = JSON.parse(event.data);
-    } catch (e) {
-      return;
+  peer = new Peer(hostPeerId, {
+    debug: 1,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
     }
+  });
 
-    switch (msg.type) {
-      case 'room-created':
-        chrome.runtime.sendMessage({
-          type: 'ROOM_READY',
-          roomId: currentRoomId
-        });
-        break;
+  peer.on('open', (id) => {
+    console.log('Host Peer registered and listening:', id);
+    chrome.runtime.sendMessage({
+      type: 'ROOM_READY',
+      roomId: currentRoomId
+    });
+  });
 
-      case 'permission-request':
-        // Controller is knocking on the door: ask host for mutual approval
+  // Listen for incoming controller connections
+  peer.on('connection', (conn) => {
+    console.log('Controller attempting to connect:', conn.peer);
+
+    conn.on('data', (data) => {
+      if (data.type === 'auth') {
+        if (String(data.pin).trim() !== currentPin) {
+          console.warn('Authentication failed: incorrect PIN');
+          conn.send({ type: 'auth-failed', error: 'Incorrect 4-digit PIN' });
+          conn.close();
+          return;
+        }
+
+        // PIN matched! Store active connection and request Host approval
+        activeConn = conn;
         chrome.runtime.sendMessage({
           type: 'PERMISSION_REQUEST',
-          clientId: msg.clientId
+          clientId: data.clientId || 'Remote Controller'
         });
-        break;
-
-      case 'signal':
-        handleSignalingMessage(msg.data);
-        break;
-
-      case 'controller-disconnected':
-      case 'session-ended':
+      } else if (data.type === 'ping') {
+        conn.send({ type: 'pong', time: data.time });
+      } else if (data.type && data.type.startsWith('input-')) {
+        // Forward input event to service worker for CDP execution
         chrome.runtime.sendMessage({
-          type: 'CONTROLLER_DISCONNECTED'
+          type: 'EXECUTE_INPUT',
+          input: data
         });
-        break;
+      } else if (data.type === 'session-ended') {
+        chrome.runtime.sendMessage({ type: 'CONTROLLER_DISCONNECTED' });
+      }
+    });
+
+    conn.on('close', () => {
+      console.log('Controller closed connection');
+      chrome.runtime.sendMessage({ type: 'CONTROLLER_DISCONNECTED' });
+    });
+  });
+
+  peer.on('error', (err) => {
+    console.error('PeerJS error on host:', err);
+    if (err.type === 'unavailable-id') {
+      chrome.runtime.sendMessage({
+        type: 'SESSION_ERROR',
+        error: 'Room ID already in use. Please generate a new one.'
+      });
     }
-  };
-
-  ws.onerror = (e) => {
-    console.error('Offscreen WebSocket error', e);
-  };
-
-  ws.onclose = () => {
-    chrome.runtime.sendMessage({ type: 'SIGNALING_CLOSED' });
-  };
+  });
 }
 
 // Host clicked Approve or Deny in popup
 async function handlePermissionDecision({ approved, canControl }) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!activeConn) return;
 
-  // Inform signaling server
-  ws.send(JSON.stringify({
-    type: 'permission-response',
+  activeConn.send({
+    type: 'permission-result',
     approved,
     canControl
-  }));
-
-  if (approved) {
-    // Initiate WebRTC PeerConnection as Host
-    setupPeerConnection();
-  }
-}
-
-async function setupPeerConnection() {
-  peerConnection = new RTCPeerConnection(rtcConfig);
-
-  // Send ICE Candidates to controller via signaling
-  peerConnection.onicecandidate = (event) => {
-    if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: 'signal',
-        data: { candidate: event.candidate }
-      }));
-    }
-  };
-
-  // Add the tab media stream tracks to WebRTC
-  if (mediaStream) {
-    mediaStream.getTracks().forEach((track) => {
-      peerConnection.addTrack(track, mediaStream);
-    });
-  }
-
-  // Create DataChannel for low-latency input event relay
-  dataChannel = peerConnection.createDataChannel('control-channel', {
-    ordered: true
   });
 
-  dataChannel.onopen = () => {
-    console.log('WebRTC DataChannel open with remote controller');
-  };
-
-  dataChannel.onmessage = (event) => {
-    try {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'ping') {
-        dataChannel.send(JSON.stringify({ type: 'pong', time: msg.time }));
-      } else if (msg.type.startsWith('input-')) {
-        // Forward input event to background service worker for CDP execution
-        chrome.runtime.sendMessage({
-          type: 'EXECUTE_INPUT',
-          input: msg
-        });
-      }
-    } catch (e) {
-      console.error('Error handling data channel message:', e);
-    }
-  };
-
-  // Create WebRTC Offer
-  try {
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-
-    ws.send(JSON.stringify({
-      type: 'signal',
-      data: { offer }
-    }));
-  } catch (err) {
-    console.error('Error creating WebRTC offer:', err);
-  }
-}
-
-async function handleSignalingMessage(data) {
-  if (!peerConnection) return;
-
-  if (data.answer) {
-    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-  } else if (data.candidate) {
-    try {
-      await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-    } catch (e) {
-      console.error('Error adding ICE candidate:', e);
-    }
+  if (approved && mediaStream && peer) {
+    console.log('Calling controller with media stream:', activeConn.peer);
+    activeCall = peer.call(activeConn.peer, mediaStream);
   }
 }
 
 function stopSession() {
+  if (activeConn) {
+    activeConn.send({ type: 'session-ended', reason: 'Host closed session' });
+    activeConn.close();
+    activeConn = null;
+  }
+  if (activeCall) {
+    activeCall.close();
+    activeCall = null;
+  }
+  if (peer) {
+    peer.destroy();
+    peer = null;
+  }
   if (mediaStream) {
     mediaStream.getTracks().forEach(t => t.stop());
     mediaStream = null;
-  }
-  if (dataChannel) {
-    dataChannel.close();
-    dataChannel = null;
-  }
-  if (peerConnection) {
-    peerConnection.close();
-    peerConnection = null;
-  }
-  if (ws) {
-    ws.close();
-    ws = null;
   }
   currentRoomId = null;
   currentPin = null;

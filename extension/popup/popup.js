@@ -141,8 +141,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   copyLinkBtn.addEventListener('click', () => {
     const roomId = displayRoomId.textContent;
     const pin = displayPin.textContent;
-    const clientBase = webClientUrlInput.value.trim() || 'http://localhost:3000';
-    const shareUrl = `${clientBase}/?room=${encodeURIComponent(roomId)}&pin=${encodeURIComponent(pin)}`;
+    let clientBase = webClientUrlInput.value.trim() || 'https://fire162.github.io/spy-extension/';
+    if (!clientBase.endsWith('/')) clientBase += '/';
+    const shareUrl = `${clientBase}#room=${encodeURIComponent(roomId)}&pin=${encodeURIComponent(pin)}`;
 
     navigator.clipboard.writeText(shareUrl).then(() => {
       copyLinkBtn.textContent = '✅ Link Copied to Clipboard!';

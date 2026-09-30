@@ -78,15 +78,13 @@ spy-extension/
 
 ## 🚀 Getting Started
 
-### Step 1: Start the Signaling Server & Web Client
-In your terminal, navigate to the `server/` directory and install dependencies:
+### Step 1: Open the Controller on GitHub Pages (Zero Server Needed!)
+The web controller is hosted directly on GitHub Pages:
+👉 **`https://fire162.github.io/spy-extension/`**
 
-```bash
-cd server
-npm install
-npm start
-```
-By default, the server starts on `http://localhost:3000`.
+No server to run, no API keys, and no authentication needed. It connects directly peer-to-peer over open WebRTC.
+
+*(Optional: A standalone local/VPS Node.js server is also included in `server/` if you ever want to self-host).*
 
 ---
 
@@ -94,17 +92,18 @@ By default, the server starts on `http://localhost:3000`.
 1. Open Google Chrome (or Brave / Edge).
 2. Navigate to `chrome://extensions/`.
 3. Enable **Developer mode** (toggle in the top-right corner).
-4. Click **Load unpacked** and select the `/root/spy-extension/extension` directory.
+4. Click **Load unpacked** and select the `extension/` folder.
 5. The **Spy Extension** icon will now appear in your browser toolbar!
 
 ---
 
 ### Step 3: Start a Session & Share Access
-1. Navigate to the tab you want to share (e.g., any web app, docs, code editor).
+1. Navigate to the tab you want to share.
 2. Click the **Spy Extension** icon in your toolbar.
 3. Click **🚀 Start Remote Session**.
 4. Click **📋 Copy Controller Link**.
-5. Send the link to the remote person (e.g., `http://localhost:3000/?room=SPY-XXXX&pin=YYYY`).
+5. Send the link to the remote person:  
+   `https://fire162.github.io/spy-extension/#room=SPY-XXXX&pin=YYYY`
 
 ---
 
