@@ -1,19 +1,36 @@
 /**
  * Spy Extension - Offscreen Document
- * Powered by open WebRTC P2P (PeerJS).
- * Strict Two-Party Mutual Consent & Full Teardown Lifecycle.
+ * Multi-Peer WebRTC P2P (PeerJS) Streamer.
+ * 1-to-Many live tab streaming with granular per-device control permissions.
  */
 
 let mediaStream = null;
 let audioCtx = null;
 let peer = null;
-let activeConn = null;
-let activeCall = null;
 let currentRoomId = null;
 let currentPin = null;
 
+// Multi-client pools
+// connectedClients: clientId (peerId) -> { conn, call, canControl, deviceInfo, connectedAt }
+const connectedClients = new Map();
+// pendingClients: clientId (peerId) -> { conn, deviceInfo }
+const pendingClients = new Map();
+
 function sanitizePeerId(raw) {
   return 'spy-' + raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function notifyClientListUpdate() {
+  const clients = Array.from(connectedClients.entries()).map(([id, c]) => ({
+    clientId: id,
+    deviceInfo: c.deviceInfo,
+    canControl: c.canControl,
+    connectedAt: c.connectedAt
+  }));
+  chrome.runtime.sendMessage({
+    type: 'CLIENTS_UPDATED',
+    clients
+  });
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -27,6 +44,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'PERMISSION_DECISION':
       handlePermissionDecision(message.payload);
+      sendResponse({ success: true });
+      break;
+
+    case 'UPDATE_CLIENT_ROLE':
+      updateClientRole(message.payload);
+      sendResponse({ success: true });
+      break;
+
+    case 'KICK_CLIENT':
+      kickClient(message.payload);
       sendResponse({ success: true });
       break;
 
@@ -75,7 +102,7 @@ async function startSession({ streamId, roomId, pin }) {
 
     console.log('Tab audio & video media stream captured successfully (Ultra-HD detail hint)');
 
-    // Route audio to host speakers so the host tab audio remains audible locally
+    // Route audio to host speakers so host tab audio remains audible locally
     try {
       audioCtx = new AudioContext();
       const source = audioCtx.createMediaStreamSource(mediaStream);
@@ -91,7 +118,10 @@ async function startSession({ streamId, roomId, pin }) {
         video: {
           mandatory: {
             chromeMediaSource: 'tab',
-            chromeMediaSourceId: streamId
+            chromeMediaSourceId: streamId,
+            maxFrameRate: 144,
+            maxWidth: 1920,
+            maxHeight: 1080
           }
         }
       });
@@ -108,7 +138,7 @@ async function startSession({ streamId, roomId, pin }) {
 
   // 2. Initialize WebRTC Host Peer
   const hostPeerId = sanitizePeerId(roomId);
-  console.log('Initializing PeerJS host with ID:', hostPeerId);
+  console.log('Initializing multi-peer host with ID:', hostPeerId);
 
   peer = new Peer(hostPeerId, {
     debug: 1,
@@ -128,23 +158,25 @@ async function startSession({ streamId, roomId, pin }) {
     });
   });
 
-  // Listen for incoming controller connections
+  // Listen for incoming controller connections (Multi-device support)
   peer.on('connection', (conn) => {
-    console.log('Controller attempting to connect:', conn.peer);
+    console.log('Incoming connection from peer:', conn.peer);
 
     conn.on('data', (data) => {
       if (data.type === 'auth') {
         if (String(data.pin).trim() !== currentPin) {
-          console.warn('Authentication failed: incorrect PIN');
+          console.warn('Authentication failed: incorrect PIN from', conn.peer);
           conn.send({ type: 'auth-failed', error: 'Incorrect 4-digit PIN' });
           conn.close();
           return;
         }
 
-        // PIN verified! Do NOT grant access or stream yet.
-        // Mutual consent is mandatory: prompt host for approval.
-        activeConn = conn;
-        console.log('PIN verified. Awaiting explicit host permission decision...');
+        // PIN verified! Add to pending clients pool
+        const clientId = conn.peer;
+        const deviceInfo = data.deviceInfo || 'Remote Device';
+        pendingClients.set(clientId, { conn, deviceInfo });
+
+        console.log(`PIN verified for ${deviceInfo} (${clientId}). Awaiting host approval...`);
 
         conn.send({
           type: 'auth-success',
@@ -152,27 +184,37 @@ async function startSession({ streamId, roomId, pin }) {
           message: 'PIN verified. Waiting for host approval...'
         });
 
-        // Notify background service worker and host popup
+        // Notify background service worker and host popup of this specific request
         chrome.runtime.sendMessage({
           type: 'PERMISSION_REQUEST',
-          clientId: data.clientId || 'Remote Controller'
+          clientId,
+          deviceInfo
         });
       } else if (data.type === 'ping') {
         conn.send({ type: 'pong', time: data.time });
       } else if (data.type && (data.type.startsWith('input-') || data.type.startsWith('nav-') || data.type === 'remote-pointer')) {
-        // Forward input, navigation, or pointer event to service worker for execution
-        chrome.runtime.sendMessage({
-          type: 'EXECUTE_INPUT',
-          input: data
-        });
+        // Enforce per-client control permission
+        const client = connectedClients.get(conn.peer);
+        if (client && client.canControl) {
+          chrome.runtime.sendMessage({
+            type: 'EXECUTE_INPUT',
+            input: data,
+            clientId: conn.peer
+          });
+        }
       } else if (data.type === 'session-ended') {
-        chrome.runtime.sendMessage({ type: 'CONTROLLER_DISCONNECTED' });
+        removeClient(conn.peer, 'Client left session');
       }
     });
 
     conn.on('close', () => {
-      console.log('Controller closed connection');
-      chrome.runtime.sendMessage({ type: 'CONTROLLER_DISCONNECTED' });
+      console.log('Peer connection closed:', conn.peer);
+      removeClient(conn.peer, 'Connection closed');
+    });
+
+    conn.on('error', (err) => {
+      console.warn('Connection error with peer:', conn.peer, err);
+      removeClient(conn.peer, 'Connection error');
     });
   });
 
@@ -187,36 +229,107 @@ async function startSession({ streamId, roomId, pin }) {
   });
 }
 
-// Host clicked Approve (Control or View Only) or Deny
-async function handlePermissionDecision({ approved, canControl }) {
-  if (!activeConn) return;
+// Host clicked Approve or Deny for a specific client
+async function handlePermissionDecision({ clientId, approved, canControl }) {
+  const pending = pendingClients.get(clientId);
+  if (!pending) {
+    console.warn('Cannot decide permission: client not found in pendingClients:', clientId);
+    return;
+  }
+
+  const { conn, deviceInfo } = pending;
+  pendingClients.delete(clientId);
 
   if (approved) {
-    console.log('Host granted permission. canControl:', canControl);
-    activeConn.send({
+    console.log(`Host granted access to ${deviceInfo} (${clientId}). canControl: ${canControl}`);
+    conn.send({
       type: 'permission-result',
       approved: true,
       canControl: !!canControl
     });
 
-    // Start streaming media only AFTER host clicked approve
+    let call = null;
+    // Broadcast live media stream to this approved peer
     if (mediaStream && peer) {
-      console.log('Calling controller with media stream:', activeConn.peer);
-      activeCall = peer.call(activeConn.peer, mediaStream);
-      if (activeCall && activeCall.peerConnection) {
-        tuneBitrate(activeCall.peerConnection);
+      console.log('Initiating WebRTC media call to peer:', clientId);
+      call = peer.call(clientId, mediaStream);
+      if (call && call.peerConnection) {
+        tuneBitrate(call.peerConnection);
       }
     }
-  } else {
-    console.log('Host denied access request.');
-    activeConn.send({
-      type: 'permission-result',
-      approved: false,
-      message: 'Access request was denied by the host.'
+
+    connectedClients.set(clientId, {
+      conn,
+      call,
+      canControl: !!canControl,
+      deviceInfo,
+      connectedAt: Date.now()
     });
-    activeConn.close();
-    activeConn = null;
+
+    notifyClientListUpdate();
+  } else {
+    console.log(`Host denied access request from ${deviceInfo} (${clientId})`);
+    try {
+      conn.send({
+        type: 'permission-result',
+        approved: false,
+        message: 'Access request was denied by the host.'
+      });
+      conn.close();
+    } catch (e) {}
+    notifyClientListUpdate();
   }
+}
+
+// Dynamically change role for an active client (e.g. switch between Full Control and View Only)
+function updateClientRole({ clientId, canControl }) {
+  const client = connectedClients.get(clientId);
+  if (client) {
+    client.canControl = !!canControl;
+    try {
+      client.conn.send({
+        type: 'role-update',
+        canControl: !!canControl
+      });
+    } catch (e) {}
+    notifyClientListUpdate();
+  }
+}
+
+// Kick a specific client without stopping the entire room
+function kickClient({ clientId }) {
+  const client = connectedClients.get(clientId);
+  if (client) {
+    try {
+      client.conn.send({
+        type: 'session-ended',
+        reason: 'Host disconnected your device'
+      });
+      client.conn.close();
+      if (client.call) client.call.close();
+    } catch (e) {}
+    connectedClients.delete(clientId);
+    notifyClientListUpdate();
+  }
+}
+
+function removeClient(clientId, reason) {
+  if (pendingClients.has(clientId)) {
+    pendingClients.delete(clientId);
+  }
+  if (connectedClients.has(clientId)) {
+    const client = connectedClients.get(clientId);
+    if (client.call) {
+      try { client.call.close(); } catch (e) {}
+    }
+    connectedClients.delete(clientId);
+    notifyClientListUpdate();
+  }
+  chrome.runtime.sendMessage({
+    type: 'CLIENT_DISCONNECTED',
+    clientId,
+    reason
+  });
 }
 
 // Boost WebRTC video sender encoding bitrate for crisp text clarity and high FPS smoothness
@@ -237,7 +350,7 @@ async function tuneBitrate(pc) {
             params.degradationPreference = 'maintain-resolution';
           }
           await sender.setParameters(params);
-          console.log('Applied 8 Mbps Ultra-HD bitrate and maintain-resolution to video sender');
+          console.log('Applied 8 Mbps Ultra-HD bitrate and maintain-resolution to peer video sender');
         }
       }
     } catch (e) {
@@ -258,21 +371,31 @@ function stopSession() {
     mediaStream.getTracks().forEach(t => t.stop());
     mediaStream = null;
   }
-  if (activeCall) {
-    try { activeCall.close(); } catch (e) {}
-    activeCall = null;
-  }
-  if (activeConn) {
+
+  // Close all connected clients
+  for (const [clientId, client] of connectedClients) {
     try {
-      activeConn.send({ type: 'session-ended', reason: 'Host closed session' });
-      activeConn.close();
+      client.conn.send({ type: 'session-ended', reason: 'Host closed session' });
+      client.conn.close();
+      if (client.call) client.call.close();
     } catch (e) {}
-    activeConn = null;
   }
+  connectedClients.clear();
+
+  // Close all pending unapproved clients
+  for (const [clientId, pending] of pendingClients) {
+    try {
+      pending.conn.send({ type: 'session-ended', reason: 'Host closed session' });
+      pending.conn.close();
+    } catch (e) {}
+  }
+  pendingClients.clear();
+
   if (peer) {
     try { peer.destroy(); } catch (e) {}
     peer = null;
   }
+
   currentRoomId = null;
   currentPin = null;
 }

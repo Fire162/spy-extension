@@ -112,6 +112,26 @@
     statusText.textContent = label;
   }
 
+  function detectDeviceInfo() {
+    const ua = navigator.userAgent;
+    let os = 'Desktop';
+    if (/iPhone/i.test(ua)) os = 'iPhone';
+    else if (/iPad/i.test(ua)) os = 'iPad';
+    else if (/Android/i.test(ua)) os = 'Android';
+    else if (/Macintosh|Mac OS X/i.test(ua)) os = 'Mac';
+    else if (/Windows/i.test(ua)) os = 'Windows';
+    else if (/Linux/i.test(ua)) os = 'Linux';
+
+    let browser = 'Browser';
+    if (/Chrome/i.test(ua) && !/Edg/i.test(ua)) browser = 'Chrome';
+    else if (/Safari/i.test(ua) && !/Chrome/i.test(ua)) browser = 'Safari';
+    else if (/Firefox/i.test(ua)) browser = 'Firefox';
+    else if (/Edg/i.test(ua)) browser = 'Edge';
+
+    const isMobile = /Mobi|Android|iPhone|iPad/i.test(ua);
+    return `${isMobile ? '📱' : '💻'} ${os} (${browser})`;
+  }
+
   function connectToHost(roomId, pin) {
     updateStatus('waiting', 'Connecting P2P...');
     joinErrorMsg.textContent = '';
@@ -140,10 +160,12 @@
       conn.on('open', () => {
         console.log('Data connection opened to host:', targetPeerId);
         updateStatus('waiting', 'Awaiting authorization...');
+        const deviceInfo = detectDeviceInfo();
         conn.send({
           type: 'auth',
           pin: pin.trim(),
-          clientId: 'Web Controller (' + (navigator.platform || 'Browser') + ')'
+          deviceInfo: deviceInfo,
+          clientId: deviceInfo
         });
       });
 
@@ -289,6 +311,26 @@
       case 'pong':
         const rtt = Math.round(performance.now() - data.time);
         latencyText.textContent = `${rtt} ms`;
+        break;
+
+      case 'role-update':
+        canControl = !!data.canControl;
+        if (canControl) {
+          modeBadge.className = 'mode-badge control';
+          modeText.textContent = 'FULL CONTROL';
+          interactionNotice.textContent = '⚡ Host granted Full Control to this device';
+          if (navBarToggleBtn) navBarToggleBtn.style.display = 'inline-flex';
+          if (navToolbar) {
+            navToolbar.style.display = 'flex';
+            navToolbar.classList.remove('collapsed');
+          }
+        } else {
+          modeBadge.className = 'mode-badge';
+          modeText.textContent = 'VIEW ONLY';
+          interactionNotice.textContent = '👁️ Host changed your access to View-Only';
+          if (navBarToggleBtn) navBarToggleBtn.style.display = 'none';
+          if (navToolbar) navToolbar.style.display = 'none';
+        }
         break;
 
       case 'session-ended':

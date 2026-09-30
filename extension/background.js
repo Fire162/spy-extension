@@ -1,7 +1,7 @@
 /**
  * Spy Extension - Background Service Worker
  * Coordinates Offscreen Document, Tab Capture, and Chrome DevTools Protocol (Debugger) Input Injection.
- * Enforces Strict Two-Party Mutual Consent & Zero Cross-Tab State Leaks.
+ * Supports Multi-Peer Connections, Per-Device Permissions, Request Queues, and Session History.
  */
 
 const OFFSCREEN_DOCUMENT_PATH = 'offscreen.html';
@@ -14,8 +14,12 @@ let sessionState = {
   tabHeight: 1080,
   roomId: null,
   pin: null,
-  canControl: false,
-  pendingRequest: null
+  serverUrl: null,
+  startTime: null,
+  tabTitle: '',
+  tabUrl: '',
+  pendingRequests: [], // array of { clientId, deviceInfo, timestamp }
+  connectedClients: []  // array of { clientId, deviceInfo, canControl, connectedAt }
 };
 
 // Check and maintain offscreen document
@@ -86,6 +90,54 @@ async function refreshTabDimensions(tabId) {
   } catch (e) {}
 }
 
+// Update Extension Action Badge dynamically based on queue and client counts
+function updateExtensionBadge() {
+  if (!sessionState.active) {
+    chrome.action.setBadgeText({ text: '' });
+    return;
+  }
+  const pendingCount = sessionState.pendingRequests.length;
+  const connectedCount = sessionState.connectedClients.length;
+
+  if (pendingCount > 0) {
+    chrome.action.setBadgeText({ text: pendingCount > 1 ? `${pendingCount}REQ` : 'REQ' });
+    chrome.action.setBadgeBackgroundColor({ color: '#ef4444' }); // Red
+  } else if (connectedCount > 0) {
+    chrome.action.setBadgeText({ text: connectedCount > 1 ? `${connectedCount}` : 'LIVE' });
+    chrome.action.setBadgeBackgroundColor({ color: '#10b981' }); // Green
+  } else {
+    chrome.action.setBadgeText({ text: 'WAIT' });
+    chrome.action.setBadgeBackgroundColor({ color: '#3b82f6' }); // Blue
+  }
+}
+
+// Save completed or terminated session into persistent history
+async function saveSessionToHistory(session, status = 'completed') {
+  if (!session.startTime || !session.roomId) return;
+  const durationSeconds = Math.max(1, Math.round((Date.now() - session.startTime) / 1000));
+  const historyItem = {
+    id: session.roomId,
+    tabTitle: session.tabTitle || 'Shared Tab',
+    tabUrl: session.tabUrl || '',
+    startedAt: session.startTime,
+    endedAt: Date.now(),
+    durationSeconds,
+    totalClients: session.connectedClients ? session.connectedClients.length : 0,
+    status
+  };
+
+  try {
+    const data = await chrome.storage.local.get(['sessionHistory']);
+    const history = Array.isArray(data.sessionHistory) ? data.sessionHistory : [];
+    history.unshift(historyItem);
+    if (history.length > 30) history.pop();
+    await chrome.storage.local.set({ sessionHistory: history });
+    console.log('Session saved to history:', historyItem);
+  } catch (err) {
+    console.warn('Failed to save session to history:', err);
+  }
+}
+
 // Zero-delay input dispatch using cached tab dimensions
 async function handleInputEvent(input) {
   if (!sessionState.active || !sessionState.tabId) return;
@@ -94,22 +146,18 @@ async function handleInputEvent(input) {
 
   // 1. Remote Browser Navigation Commands
   if (input.type === 'nav-back') {
-    if (!sessionState.canControl) return;
     await chrome.tabs.goBack(tabId).catch(() => {});
     return;
   }
   if (input.type === 'nav-forward') {
-    if (!sessionState.canControl) return;
     await chrome.tabs.goForward(tabId).catch(() => {});
     return;
   }
   if (input.type === 'nav-reload') {
-    if (!sessionState.canControl) return;
     await chrome.tabs.reload(tabId).catch(() => {});
     return;
   }
   if (input.type === 'nav-url' && input.url) {
-    if (!sessionState.canControl) return;
     let targetUrl = input.url.trim();
     if (!/^https?:\/\//i.test(targetUrl)) {
       if (targetUrl.includes('.') && !targetUrl.includes(' ')) {
@@ -121,8 +169,6 @@ async function handleInputEvent(input) {
     await chrome.tabs.update(tabId, { url: targetUrl }).catch(() => {});
     return;
   }
-
-  if (!sessionState.canControl) return;
 
   const targetX = Math.round(input.x * (sessionState.tabWidth || 1920));
   const targetY = Math.round(input.y * (sessionState.tabHeight || 1080));
@@ -170,14 +216,12 @@ async function handleInputEvent(input) {
           y: targetY
         });
       } else if (input.action === 'click' || input.action === 'down') {
-        // Move to target
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
           type: 'mouseMoved',
           x: targetX,
           y: targetY
         });
 
-        // Mouse pressed with proper buttons bitmask
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
           type: 'mousePressed',
           x: targetX,
@@ -188,7 +232,6 @@ async function handleInputEvent(input) {
         });
 
         if (input.action === 'click') {
-          // Mouse released
           await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
             type: 'mouseReleased',
             x: targetX,
@@ -198,7 +241,7 @@ async function handleInputEvent(input) {
             clickCount: 1
           });
 
-          // Dual-layer DOM trigger: ensures clicks register on elements, inputs, and links
+          // Dual-layer DOM click trigger
           try {
             await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
               expression: `
@@ -243,10 +286,9 @@ async function handleInputEvent(input) {
         });
       }
     } else if (input.type === 'input-wheel') {
-      const deltaX = input.deltaX || 0;
-      const deltaY = input.deltaY || 0;
+      const deltaX = Math.round(input.deltaX || 0);
+      const deltaY = Math.round(input.deltaY || 0);
 
-      // 1. Native CDP mouseWheel event
       await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
         type: 'mouseWheel',
         x: targetX,
@@ -255,7 +297,7 @@ async function handleInputEvent(input) {
         deltaY: deltaY
       });
 
-      // 2. Dual-layer DOM scroll fallback: ensures scrolling on all sites
+      // Dual-layer DOM scroll fallback
       try {
         await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
           expression: `
@@ -288,25 +330,21 @@ async function handleInputEvent(input) {
       }
     }
   } catch (err) {
-    console.warn('Failed to dispatch input via debugger:', err.message);
+    console.error('Error executing input event:', err);
   }
 }
 
-// Runtime Message Router
+// Main message listener
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
     case 'START_HOST_SESSION': {
       (async () => {
         try {
-          const { tabId, roomId, pin, allowControl } = message.payload;
+          const { tabId, roomId, pin, serverUrl } = message.payload;
 
-          const tab = await chrome.tabs.get(tabId);
-          if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.includes('chromewebstore.google.com')) {
-            throw new Error('Chrome security prohibits remote control on chrome:// and extension store pages. Please share a standard website (e.g. google.com, wikipedia.org, github.com).');
-          }
-
-          // Full cleanup of any previous session to prevent cross-tab leaks
+          // Full teardown of any previous session first
           if (sessionState.active) {
+            await saveSessionToHistory(sessionState, 'terminated');
             if (sessionState.tabId) {
               await detachDebugger(sessionState.tabId);
             }
@@ -314,11 +352,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             await closeOffscreenDocument();
           }
 
+          const tab = await chrome.tabs.get(tabId);
+
           sessionState.tabId = tabId;
+          sessionState.tabTitle = tab.title || 'Untitled Tab';
+          sessionState.tabUrl = tab.url || '';
           sessionState.roomId = roomId;
           sessionState.pin = pin;
-          sessionState.canControl = false; // Never grant control until host explicitly confirms request!
-          sessionState.pendingRequest = null;
+          sessionState.serverUrl = serverUrl;
+          sessionState.startTime = Date.now();
+          sessionState.pendingRequests = [];
+          sessionState.connectedClients = [];
           sessionState.active = true;
 
           // 1. Get tab capture stream ID
@@ -335,12 +379,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           chrome.runtime.sendMessage({
             target: 'offscreen',
             type: 'START_SESSION',
-            payload: { streamId, roomId, pin, allowControl }
+            payload: { streamId, roomId, pin }
           });
 
-          chrome.action.setBadgeText({ text: 'WAIT' });
-          chrome.action.setBadgeBackgroundColor({ color: '#3b82f6' });
-
+          updateExtensionBadge();
           sendResponse({ success: true });
         } catch (err) {
           console.error('Error starting host session:', err);
@@ -351,50 +393,116 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     case 'GET_SESSION_STATE': {
-      sendResponse(sessionState);
+      sendResponse({
+        ...sessionState,
+        durationSeconds: sessionState.startTime ? Math.round((Date.now() - sessionState.startTime) / 1000) : 0
+      });
+      return true;
+    }
+
+    case 'GET_SESSION_HISTORY': {
+      chrome.storage.local.get(['sessionHistory'], (res) => {
+        sendResponse({ history: res.sessionHistory || [] });
+      });
+      return true;
+    }
+
+    case 'CLEAR_SESSION_HISTORY': {
+      chrome.storage.local.set({ sessionHistory: [] }, () => {
+        sendResponse({ success: true });
+      });
       return true;
     }
 
     case 'PERMISSION_REQUEST': {
-      // Remote controller entered valid PIN and is knocking on the door
-      sessionState.pendingRequest = { clientId: message.clientId };
-      chrome.action.setBadgeText({ text: 'REQ' });
-      chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
+      // Incoming connection request from a device
+      const { clientId, deviceInfo } = message;
+      const exists = sessionState.pendingRequests.some(r => r.clientId === clientId);
+      if (!exists) {
+        sessionState.pendingRequests.push({
+          clientId,
+          deviceInfo: deviceInfo || 'Remote Device',
+          timestamp: Date.now()
+        });
+      }
+
+      updateExtensionBadge();
 
       // Native desktop notification for instant awareness
       try {
-        chrome.notifications.create('perm-request-notice', {
+        chrome.notifications.create(`perm-request-${clientId}`, {
           type: 'basic',
           iconUrl: 'icons/icon128.png',
-          title: 'Spy Extension - Remote Access Request',
-          message: `${message.clientId || 'A remote user'} requested access to this tab. Click the extension icon to Approve or Deny.`,
+          title: 'Remote Access Request',
+          message: `${deviceInfo || 'A device'} entered the PIN and requested access. Click extension icon to decide.`,
           priority: 2
         });
       } catch (e) {}
+
+      // Broadcast to popup if open
+      chrome.runtime.sendMessage({
+        type: 'PENDING_REQUESTS_UPDATED',
+        requests: sessionState.pendingRequests
+      });
       break;
     }
 
     case 'DECIDE_PERMISSION': {
-      const { approved, canControl } = message.payload;
-      sessionState.canControl = approved && canControl;
-      sessionState.pendingRequest = null;
-
-      if (approved) {
-        chrome.action.setBadgeText({ text: sessionState.canControl ? 'CTRL' : 'VIEW' });
-        chrome.action.setBadgeBackgroundColor({ color: '#10b981' });
-      } else {
-        chrome.action.setBadgeText({ text: 'DENY' });
-        chrome.action.setBadgeBackgroundColor({ color: '#6b7280' });
-      }
+      const { clientId, approved, canControl } = message.payload;
+      sessionState.pendingRequests = sessionState.pendingRequests.filter(r => r.clientId !== clientId);
 
       // Forward host decision to offscreen document
       chrome.runtime.sendMessage({
         target: 'offscreen',
         type: 'PERMISSION_DECISION',
-        payload: { approved, canControl: sessionState.canControl }
+        payload: { clientId, approved, canControl }
+      });
+
+      updateExtensionBadge();
+      sendResponse({ success: true });
+      return true;
+    }
+
+    case 'UPDATE_CLIENT_ROLE': {
+      chrome.runtime.sendMessage({
+        target: 'offscreen',
+        type: 'UPDATE_CLIENT_ROLE',
+        payload: message.payload
       });
       sendResponse({ success: true });
       return true;
+    }
+
+    case 'KICK_CLIENT': {
+      chrome.runtime.sendMessage({
+        target: 'offscreen',
+        type: 'KICK_CLIENT',
+        payload: message.payload
+      });
+      sendResponse({ success: true });
+      return true;
+    }
+
+    case 'CLIENTS_UPDATED': {
+      sessionState.connectedClients = message.clients || [];
+      updateExtensionBadge();
+      // Broadcast to popup
+      chrome.runtime.sendMessage({
+        type: 'CLIENTS_UPDATED',
+        clients: sessionState.connectedClients
+      });
+      break;
+    }
+
+    case 'CLIENT_DISCONNECTED': {
+      sessionState.connectedClients = sessionState.connectedClients.filter(c => c.clientId !== message.clientId);
+      sessionState.pendingRequests = sessionState.pendingRequests.filter(r => r.clientId !== message.clientId);
+      updateExtensionBadge();
+      chrome.runtime.sendMessage({
+        type: 'CLIENT_DISCONNECTED',
+        clientId: message.clientId
+      });
+      break;
     }
 
     case 'EXECUTE_INPUT': {
@@ -404,6 +512,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'STOP_HOST_SESSION': {
       (async () => {
+        if (sessionState.active) {
+          await saveSessionToHistory(sessionState, 'completed');
+        }
+
         if (sessionState.tabId) {
           try {
             await chrome.debugger.sendCommand({ tabId: sessionState.tabId }, 'Runtime.evaluate', {
@@ -420,20 +532,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         sessionState.active = false;
         sessionState.tabId = null;
-        sessionState.canControl = false;
-        sessionState.pendingRequest = null;
-        chrome.action.setBadgeText({ text: '' });
+        sessionState.startTime = null;
+        sessionState.pendingRequests = [];
+        sessionState.connectedClients = [];
+        updateExtensionBadge();
         sendResponse({ success: true });
       })();
       return true;
-    }
-
-    case 'CONTROLLER_DISCONNECTED': {
-      sessionState.canControl = false;
-      sessionState.pendingRequest = null;
-      chrome.action.setBadgeText({ text: 'IDLE' });
-      chrome.action.setBadgeBackgroundColor({ color: '#6b7280' });
-      break;
     }
   }
 });

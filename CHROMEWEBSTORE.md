@@ -112,6 +112,7 @@ https://fire162.github.io/spy-extension/
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
-| 1.2.0 | 2026-09-30 | Remote navigation toolbar (Back/Forward/Reload/URL bar), instant QR code pairing in extension popup, 2-finger mobile pinch-to-zoom & pan, host live laser pointer, 8 Mbps Ultra-HD WebRTC bitrate boost, and mobile clipboard paste | Current |
+| 1.3.0 | 2026-09-30 | Multi-peer WebRTC 1-to-many streaming pool (supports multiple devices simultaneously), incoming requests queue with device detection (Mobile/Desktop), active connected devices roster with dynamic role toggling & kick controls, and persistent past & expired session history log | Current |
+| 1.2.0 | 2026-09-30 | Remote navigation toolbar (Back/Forward/Reload/URL bar), instant QR code pairing in extension popup, 2-finger mobile pinch-to-zoom & pan, host live laser pointer, 8 Mbps Ultra-HD WebRTC bitrate boost, and mobile clipboard paste | Archived |
 | 1.1.0 | 2026-09-30 | Low-latency WebRTC optimization (zero-jitter buffering, 60fps capture, dimension caching), mobile touch dock, virtual keyboard, and live tab audio | Archived |
 | 1.0.0 | 2026-09-30 | Initial Manifest V3 release with direct WebRTC P2P and GitHub Pages web controller | Archived |

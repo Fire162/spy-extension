@@ -18,86 +18,122 @@
       <div class="status-pill" id="globalStatusPill">IDLE</div>
     </header>
 
-    <!-- Content View: Setup / Idle -->
-    <section id="setupView" class="view-panel">
-      <div class="tab-card">
-        <span class="card-label">TARGET TAB TO SHARE</span>
-        <div class="tab-title" id="activeTabTitle">Loading current tab...</div>
-        <div class="tab-url" id="activeTabUrl"></div>
-      </div>
+    <!-- Top Navigation Tabs (Session vs History) -->
+    <nav class="nav-tabs">
+      <button class="nav-tab active" id="tabActiveBtn">📡 Current Session</button>
+      <button class="nav-tab" id="tabHistoryBtn">📜 Past Sessions (<span id="historyCountBadge">0</span>)</button>
+    </nav>
 
-      <div class="settings-group">
-        <label class="toggle-switch">
-          <input type="checkbox" id="allowControlToggle" checked>
-          <span class="slider"></span>
-          <span class="toggle-label">Allow Remote Control (Mouse/Keys)</span>
-        </label>
-        <span class="setting-desc">If unchecked, remote user can only view your tab.</span>
-      </div>
-
-      <div class="accordion">
-        <div class="accordion-header" id="serverSettingsHeader">
-          <span>⚙️ Controller URL Settings</span>
-          <span class="arrow">▾</span>
+    <!-- Tab Panel 1: Current Session / Setup -->
+    <main id="sessionMainPanel">
+      <!-- Content View: Setup / Idle -->
+      <section id="setupView" class="view-panel">
+        <div class="tab-card">
+          <span class="card-label">TARGET TAB TO SHARE</span>
+          <div class="tab-title" id="activeTabTitle">Loading current tab...</div>
+          <div class="tab-url" id="activeTabUrl"></div>
         </div>
-        <div class="accordion-body" id="serverSettingsBody" style="display: none;">
-          <label for="webClientUrlInput">WEB CONTROLLER URL</label>
-          <input type="text" id="webClientUrlInput" value="https://fire162.github.io/spy-extension/" placeholder="https://fire162.github.io/spy-extension/">
+
+        <div class="settings-group">
+          <label class="toggle-switch">
+            <input type="checkbox" id="allowControlToggle" checked>
+            <span class="slider"></span>
+            <span class="toggle-label">Default Permission: Full Control</span>
+          </label>
+          <span class="setting-desc">You can also approve/deny devices individually in real time.</span>
         </div>
-      </div>
 
-      <button id="startSessionBtn" class="btn btn-primary btn-block">
-        🚀 Start Remote Session
-      </button>
-    </section>
-
-    <!-- Content View: Active Session -->
-    <section id="activeView" class="view-panel" style="display: none;">
-      <div class="session-box">
-        <div class="room-details">
-          <div class="detail-col">
-            <span class="detail-label">ROOM ID</span>
-            <span class="detail-val" id="displayRoomId">SPY-0000</span>
+        <div class="accordion">
+          <div class="accordion-header" id="serverSettingsHeader">
+            <span>⚙️ Controller URL Settings</span>
+            <span class="arrow">▾</span>
           </div>
-          <div class="detail-col">
-            <span class="detail-label">SECURITY PIN</span>
-            <span class="detail-val" id="displayPin">0000</span>
+          <div class="accordion-body" id="serverSettingsBody" style="display: none;">
+            <label for="webClientUrlInput">WEB CONTROLLER URL</label>
+            <input type="text" id="webClientUrlInput" value="https://fire162.github.io/spy-extension/" placeholder="https://fire162.github.io/spy-extension/">
           </div>
         </div>
 
-        <div class="share-actions">
-          <button id="copyLinkBtn" class="btn btn-outline btn-sm btn-block">
-            📋 Copy Controller Link
-          </button>
+        <button id="startSessionBtn" class="btn btn-primary btn-block">
+          🚀 Start Remote Session
+        </button>
+      </section>
+
+      <!-- Content View: Active Session -->
+      <section id="activeView" class="view-panel" style="display: none;">
+        <!-- Session Overview Box -->
+        <div class="session-box">
+          <div class="session-top-row">
+            <div class="session-timer" id="sessionTimer">⏱️ 00:00</div>
+            <div class="multi-indicator">👥 Multi-Device Ready</div>
+          </div>
+
+          <div class="room-details">
+            <div class="detail-col">
+              <span class="detail-label">ROOM ID</span>
+              <span class="detail-val" id="displayRoomId">SPY-0000</span>
+            </div>
+            <div class="detail-col">
+              <span class="detail-label">SECURITY PIN</span>
+              <span class="detail-val" id="displayPin">0000</span>
+            </div>
+          </div>
+
+          <div class="share-actions">
+            <button id="copyLinkBtn" class="btn btn-outline btn-sm btn-block">
+              📋 Copy Controller Link
+            </button>
+          </div>
+
+          <!-- Mobile QR Code Instant Pairing -->
+          <div class="qr-container" id="qrContainer">
+            <div class="qr-box" id="qrcode"></div>
+            <span class="qr-caption">📱 Scan with phone camera to connect</span>
+          </div>
         </div>
 
-        <!-- Mobile QR Code Instant Pairing -->
-        <div class="qr-container" id="qrContainer">
-          <div class="qr-box" id="qrcode"></div>
-          <span class="qr-caption">📱 Point phone camera to connect instantly</span>
+        <!-- Section: Pending Connection Requests Queue -->
+        <div class="device-section" id="pendingSection" style="display: none;">
+          <div class="section-header">
+            <span class="section-title">⚠️ PENDING REQUESTS</span>
+            <span class="badge-count" id="pendingCountBadge">0</span>
+          </div>
+          <div class="request-queue" id="requestsQueue">
+            <!-- Dynamically injected request cards -->
+          </div>
         </div>
-      </div>
 
-      <!-- Consent Request Dialog (When controller connects) -->
-      <div class="request-card" id="consentCard" style="display: none;">
-        <div class="request-badge">⚠️ PERMISSION REQUEST</div>
-        <p class="request-text" id="requestNoticeText">A remote user wants to access this tab.</p>
-        <div class="request-actions">
-          <button id="grantControlBtn" class="btn btn-success btn-sm">Allow Control</button>
-          <button id="grantViewBtn" class="btn btn-outline btn-sm">View Only</button>
-          <button id="denyBtn" class="btn btn-danger btn-sm">Deny</button>
+        <!-- Section: Connected Devices Roster -->
+        <div class="device-section" id="connectedSection">
+          <div class="section-header">
+            <span class="section-title">👥 CONNECTED DEVICES</span>
+            <span class="badge-count" id="connectedCountBadge">0</span>
+          </div>
+          <div class="devices-list" id="devicesList">
+            <!-- Dynamically injected device rows -->
+          </div>
+          <!-- Banner shown when 0 devices connected -->
+          <div class="active-banner" id="noDevicesBanner">
+            <div class="pulse-ring"></div>
+            <span>Waiting for devices to enter PIN and join...</span>
+          </div>
         </div>
-      </div>
 
-      <!-- Live Connection State Banner -->
-      <div class="active-banner" id="activeBanner">
-        <div class="pulse-ring"></div>
-        <span id="activeBannerText">Waiting for controller to join...</span>
-      </div>
+        <button id="stopSessionBtn" class="btn btn-danger btn-block">
+          🛑 Terminate Room for All
+        </button>
+      </section>
+    </main>
 
-      <button id="stopSessionBtn" class="btn btn-danger btn-block">
-        🛑 Terminate & Disconnect
-      </button>
+    <!-- Tab Panel 2: Past / Expired Sessions History -->
+    <section id="historyView" class="view-panel" style="display: none;">
+      <div class="history-header">
+        <span class="section-title">PAST & EXPIRED SESSIONS</span>
+        <button id="clearHistoryBtn" class="btn-clear-history">Clear Log</button>
+      </div>
+      <div class="history-list" id="historyList">
+        <!-- Dynamically injected history cards -->
+      </div>
     </section>
 
     <!-- Footer -->
