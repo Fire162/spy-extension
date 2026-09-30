@@ -214,12 +214,40 @@
 
   function getCoordinates(event) {
     const rect = remoteVideo.getBoundingClientRect();
-    const x = (event.clientX - rect.left) / rect.width;
-    const y = (event.clientY - rect.top) / rect.height;
-    return {
-      x: Math.max(0, Math.min(1, x)),
-      y: Math.max(0, Math.min(1, y))
-    };
+    const videoWidth = remoteVideo.videoWidth || rect.width;
+    const videoHeight = remoteVideo.videoHeight || rect.height;
+
+    if (!videoWidth || !videoHeight) {
+      const x = (event.clientX - rect.left) / rect.width;
+      const y = (event.clientY - rect.top) / rect.height;
+      return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+    }
+
+    const videoRatio = videoWidth / videoHeight;
+    const elementRatio = rect.width / rect.height;
+
+    let renderWidth = rect.width;
+    let renderHeight = rect.height;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (elementRatio > videoRatio) {
+      // Letterboxed on left and right
+      renderWidth = rect.height * videoRatio;
+      offsetX = (rect.width - renderWidth) / 2;
+    } else {
+      // Letterboxed on top and bottom
+      renderHeight = rect.width / videoRatio;
+      offsetY = (rect.height - renderHeight) / 2;
+    }
+
+    const clickX = event.clientX - rect.left - offsetX;
+    const clickY = event.clientY - rect.top - offsetY;
+
+    const normX = Math.max(0, Math.min(1, clickX / renderWidth));
+    const normY = Math.max(0, Math.min(1, clickY / renderHeight));
+
+    return { x: normX, y: normY };
   }
 
   let lastMoveTime = 0;
@@ -257,6 +285,30 @@
       type: 'input-mouse',
       action: 'up',
       button: e.button === 2 ? 'right' : (e.button === 1 ? 'middle' : 'left'),
+      x: coords.x,
+      y: coords.y
+    });
+  });
+
+  remoteVideo.addEventListener('click', (e) => {
+    if (!canControl) return;
+    const coords = getCoordinates(e);
+    sendInput({
+      type: 'input-mouse',
+      action: 'click',
+      button: e.button === 2 ? 'right' : (e.button === 1 ? 'middle' : 'left'),
+      x: coords.x,
+      y: coords.y
+    });
+  });
+
+  remoteVideo.addEventListener('dblclick', (e) => {
+    if (!canControl) return;
+    const coords = getCoordinates(e);
+    sendInput({
+      type: 'input-mouse',
+      action: 'dblclick',
+      button: 'left',
       x: coords.x,
       y: coords.y
     });

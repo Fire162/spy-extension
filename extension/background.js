@@ -13,9 +13,8 @@ let sessionState = {
   tabHeight: 1080,
   roomId: null,
   pin: null,
-  serverUrl: 'ws://localhost:3000',
   canControl: false,
-  pendingRequest: null // Stores incoming request if host popup is closed
+  pendingRequest: null
 };
 
 // Check and maintain offscreen document
@@ -47,22 +46,9 @@ async function attachDebugger(tabId) {
   try {
     await chrome.debugger.attach({ tabId }, '1.3');
     console.log(`Debugger attached to tab ${tabId}`);
-
-    // Retrieve active viewport size to accurately scale coordinates
-    try {
-      const layout = await chrome.debugger.sendCommand({ tabId }, 'Page.getLayoutViewport');
-      if (layout && layout.visualViewport) {
-        sessionState.tabWidth = layout.visualViewport.clientWidth || 1920;
-        sessionState.tabHeight = layout.visualViewport.clientHeight || 1080;
-      }
-    } catch (e) {
-      // Fallback tab size
-      const tab = await chrome.tabs.get(tabId);
-      sessionState.tabWidth = tab.width || 1920;
-      sessionState.tabHeight = tab.height || 1080;
-    }
   } catch (err) {
     console.error('Failed to attach debugger:', err);
+    throw err;
   }
 }
 
@@ -76,35 +62,128 @@ async function detachDebugger(tabId) {
   }
 }
 
-// Translate and dispatch input commands using Chrome DevTools Protocol (CDP)
+// Dynamically query target tab viewport size
+async function getTabDimensions(tabId) {
+  try {
+    const res = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+      expression: '({ w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio })',
+      returnByValue: true
+    });
+    if (res && res.result && res.result.value) {
+      return {
+        width: res.result.value.w || 1920,
+        height: res.result.value.h || 1080,
+        dpr: res.result.value.dpr || 1
+      };
+    }
+  } catch (e) {}
+
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab && tab.width && tab.height) {
+      return { width: tab.width, height: tab.height, dpr: 1 };
+    }
+  } catch (e) {}
+
+  return { width: sessionState.tabWidth || 1920, height: sessionState.tabHeight || 1080, dpr: 1 };
+}
+
+// Translate and dispatch input commands using Chrome DevTools Protocol (CDP) + DOM fallback
 async function handleInputEvent(input) {
   if (!sessionState.active || !sessionState.canControl || !sessionState.tabId) return;
 
   const tabId = sessionState.tabId;
-  const targetX = Math.round(input.x * sessionState.tabWidth);
-  const targetY = Math.round(input.y * sessionState.tabHeight);
+  const dims = await getTabDimensions(tabId);
+  sessionState.tabWidth = dims.width;
+  sessionState.tabHeight = dims.height;
+
+  const targetX = Math.round(input.x * dims.width);
+  const targetY = Math.round(input.y * dims.height);
 
   try {
     if (input.type === 'input-mouse') {
-      let cdpType = 'mouseMoved';
-      let button = input.button || 'none';
-      let clickCount = 0;
+      const button = input.button === 'right' ? 'right' : (input.button === 'middle' ? 'middle' : 'left');
+      const buttonsBit = button === 'right' ? 2 : (button === 'middle' ? 4 : 1);
 
-      if (input.action === 'down') {
-        cdpType = 'mousePressed';
-        clickCount = 1;
+      if (input.action === 'move') {
+        await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+          type: 'mouseMoved',
+          x: targetX,
+          y: targetY
+        });
+      } else if (input.action === 'click' || input.action === 'down') {
+        // Move to target
+        await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+          type: 'mouseMoved',
+          x: targetX,
+          y: targetY
+        });
+
+        // Mouse pressed with proper buttons bitmask
+        await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+          type: 'mousePressed',
+          x: targetX,
+          y: targetY,
+          button: button,
+          buttons: buttonsBit,
+          clickCount: 1
+        });
+
+        if (input.action === 'click') {
+          // Mouse released
+          await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+            type: 'mouseReleased',
+            x: targetX,
+            y: targetY,
+            button: button,
+            buttons: 0,
+            clickCount: 1
+          });
+
+          // Dual-layer DOM trigger: ensures clicks register on elements, inputs, and links
+          try {
+            await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+              expression: `
+                (() => {
+                  const el = document.elementFromPoint(${targetX}, ${targetY});
+                  if (el) {
+                    el.focus?.();
+                    if (typeof el.click === 'function' && el.tagName !== 'BODY' && el.tagName !== 'HTML') {
+                      el.click();
+                    }
+                  }
+                })()
+              `
+            });
+          } catch (e) {}
+        }
       } else if (input.action === 'up') {
-        cdpType = 'mouseReleased';
-        clickCount = 1;
+        await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+          type: 'mouseReleased',
+          x: targetX,
+          y: targetY,
+          button: button,
+          buttons: 0,
+          clickCount: 1
+        });
+      } else if (input.action === 'dblclick') {
+        await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+          type: 'mousePressed',
+          x: targetX,
+          y: targetY,
+          button: 'left',
+          buttons: 1,
+          clickCount: 2
+        });
+        await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+          type: 'mouseReleased',
+          x: targetX,
+          y: targetY,
+          button: 'left',
+          buttons: 0,
+          clickCount: 2
+        });
       }
-
-      await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
-        type: cdpType,
-        x: targetX,
-        y: targetY,
-        button: button,
-        clickCount: clickCount
-      });
     } else if (input.type === 'input-wheel') {
       await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
         type: 'mouseWheel',
@@ -132,7 +211,6 @@ async function handleInputEvent(input) {
       }
     }
   } catch (err) {
-    // Tab might be navigating or closed
     console.warn('Failed to dispatch input via debugger:', err.message);
   }
 }
@@ -143,11 +221,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'START_HOST_SESSION': {
       (async () => {
         try {
-          const { tabId, roomId, pin, serverUrl, allowControl } = message.payload;
+          const { tabId, roomId, pin, allowControl } = message.payload;
+
+          const tab = await chrome.tabs.get(tabId);
+          if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.includes('chromewebstore.google.com')) {
+            throw new Error('Chrome security prohibits remote control on chrome:// and extension store pages. Please share a standard website (e.g. google.com, wikipedia.org, github.com).');
+          }
+
           sessionState.tabId = tabId;
           sessionState.roomId = roomId;
           sessionState.pin = pin;
-          sessionState.serverUrl = serverUrl;
           sessionState.canControl = allowControl;
           sessionState.active = true;
 
@@ -164,7 +247,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           chrome.runtime.sendMessage({
             target: 'offscreen',
             type: 'START_SESSION',
-            payload: { streamId, roomId, pin, serverUrl }
+            payload: { streamId, roomId, pin, allowControl }
           });
 
           sendResponse({ success: true });
@@ -181,12 +264,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
 
-    case 'PERMISSION_REQUEST': {
-      // Received from offscreen when controller joins
-      sessionState.pendingRequest = { clientId: message.clientId };
-      // Notify active popup or system notification
-      chrome.action.setBadgeText({ text: 'REQ' });
-      chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+    case 'CONTROLLER_CONNECTED': {
+      sessionState.canControl = !!message.canControl;
+      chrome.action.setBadgeText({ text: sessionState.canControl ? 'CTRL' : 'VIEW' });
+      chrome.action.setBadgeBackgroundColor({ color: '#10b981' });
       break;
     }
 
@@ -194,7 +275,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const { approved, canControl } = message.payload;
       sessionState.canControl = approved && canControl;
       sessionState.pendingRequest = null;
-      chrome.action.setBadgeText({ text: approved ? 'ON' : '' });
+      chrome.action.setBadgeText({ text: approved ? (sessionState.canControl ? 'CTRL' : 'VIEW') : '' });
       chrome.action.setBadgeBackgroundColor({ color: '#10b981' });
 
       // Forward decision to offscreen document

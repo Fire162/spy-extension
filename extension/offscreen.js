@@ -9,6 +9,7 @@ let activeConn = null;
 let activeCall = null;
 let currentRoomId = null;
 let currentPin = null;
+let currentAllowControl = true;
 
 function sanitizePeerId(raw) {
   return 'spy-' + raw.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -36,9 +37,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-async function startSession({ streamId, roomId, pin }) {
+async function startSession({ streamId, roomId, pin, allowControl }) {
   currentRoomId = roomId;
   currentPin = String(pin).trim();
+  currentAllowControl = !!allowControl;
 
   // 1. Capture Tab Media Stream
   try {
@@ -96,11 +98,27 @@ async function startSession({ streamId, roomId, pin }) {
           return;
         }
 
-        // PIN matched! Store active connection and request Host approval
         activeConn = conn;
+        console.log('Controller PIN verified. Granting permission:', currentAllowControl);
+
+        // Send permission decision to controller
+        activeConn.send({
+          type: 'permission-result',
+          approved: true,
+          canControl: currentAllowControl
+        });
+
+        // Call controller with media stream
+        if (mediaStream && peer) {
+          console.log('Calling controller with media stream:', activeConn.peer);
+          activeCall = peer.call(activeConn.peer, mediaStream);
+        }
+
+        // Notify background
         chrome.runtime.sendMessage({
-          type: 'PERMISSION_REQUEST',
-          clientId: data.clientId || 'Remote Controller'
+          type: 'CONTROLLER_CONNECTED',
+          clientId: data.clientId || 'Remote Controller',
+          canControl: currentAllowControl
         });
       } else if (data.type === 'ping') {
         conn.send({ type: 'pong', time: data.time });
@@ -132,20 +150,16 @@ async function startSession({ streamId, roomId, pin }) {
   });
 }
 
-// Host clicked Approve or Deny in popup
+// Host clicked Change Permissions in popup
 async function handlePermissionDecision({ approved, canControl }) {
+  currentAllowControl = approved && canControl;
   if (!activeConn) return;
 
   activeConn.send({
     type: 'permission-result',
     approved,
-    canControl
+    canControl: currentAllowControl
   });
-
-  if (approved && mediaStream && peer) {
-    console.log('Calling controller with media stream:', activeConn.peer);
-    activeCall = peer.call(activeConn.peer, mediaStream);
-  }
 }
 
 function stopSession() {

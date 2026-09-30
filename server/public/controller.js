@@ -1,6 +1,6 @@
 /**
- * Spy Extension - Web Controller Client
- * Peer-to-peer WebRTC connection + Input Event Dispatcher
+ * Spy Extension - Web Controller Client (GitHub Pages / Standalone)
+ * Powered by open WebRTC P2P (PeerJS). Zero API keys, zero auth, zero config.
  */
 
 (function () {
@@ -12,7 +12,6 @@
   const joinForm = document.getElementById('joinForm');
   const roomIdInput = document.getElementById('roomIdInput');
   const pinInput = document.getElementById('pinInput');
-  const serverWsInput = document.getElementById('serverWsInput');
   const joinErrorMsg = document.getElementById('joinErrorMsg');
   const statusIndicator = document.getElementById('statusIndicator');
   const statusText = document.getElementById('statusText');
@@ -30,257 +29,225 @@
   const interactionNotice = document.getElementById('interactionNotice');
 
   // Connection State
-  let ws = null;
-  let peerConnection = null;
-  let dataChannel = null;
+  let peer = null;
+  let conn = null;
+  let activeCall = null;
   let currentRoomId = null;
   let canControl = false;
   let pingInterval = null;
   let lastPingTimestamp = 0;
 
-  // WebRTC Configuration using standard open STUN server (zero third-party proprietary services)
-  const rtcConfig = {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
-    ]
-  };
-
-  // Pre-fill fields from URL query params (e.g. ?room=SPY-1234&pin=5678)
-  const urlParams = new URLSearchParams(window.location.search);
-  if (urlParams.has('room')) roomIdInput.value = urlParams.get('room');
-  if (urlParams.has('pin')) pinInput.value = urlParams.get('pin');
-
-  // Determine default WebSocket URL
-  function getDefaultWsUrl() {
-    const loc = window.location;
-    const protocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
-    // If running in development or hosted directly on server
-    if (loc.host) {
-      return `${protocol}//${loc.host}`;
-    }
-    return 'ws://localhost:3000';
+  function sanitizePeerId(raw) {
+    return 'spy-' + raw.toLowerCase().replace(/[^a-z0-9]/g, '');
   }
 
-  serverWsInput.placeholder = getDefaultWsUrl();
+  // Parse room and pin from either URL Hash (#room=...&pin=...) or Query string (?room=...&pin=...)
+  function parseUrlParams() {
+    let params = new URLSearchParams(window.location.search);
+    if (!params.has('room') && window.location.hash) {
+      const hashStr = window.location.hash.startsWith('#') ? window.location.hash.substring(1) : window.location.hash;
+      params = new URLSearchParams(hashStr);
+    }
+
+    if (params.has('room')) roomIdInput.value = params.get('room');
+    if (params.has('pin')) pinInput.value = params.get('pin');
+  }
+
+  parseUrlParams();
 
   function updateStatus(state, label) {
     statusIndicator.className = `connection-status ${state}`;
     statusText.textContent = label;
   }
 
-  // --- WebSocket & WebRTC Setup ---
-  function connectToSignaling(roomId, pin, wsUrl) {
-    updateStatus('waiting', 'Connecting to server...');
+  function connectToHost(roomId, pin) {
+    updateStatus('waiting', 'Connecting P2P...');
     joinErrorMsg.textContent = '';
+    currentRoomId = roomId;
 
-    const targetUrl = wsUrl || getDefaultWsUrl();
+    const targetPeerId = sanitizePeerId(roomId);
 
-    try {
-      ws = new WebSocket(targetUrl);
-    } catch (err) {
-      joinErrorMsg.textContent = `WebSocket connection error: ${err.message}`;
-      updateStatus('', 'Disconnected');
-      return;
-    }
-
-    ws.onopen = () => {
-      updateStatus('waiting', 'Joining room...');
-      ws.send(JSON.stringify({
-        type: 'join-room',
-        roomId: roomId.trim().toUpperCase(),
-        pin: pin.trim(),
-        clientId: 'Web Controller (' + navigator.platform + ')'
-      }));
-    };
-
-    ws.onmessage = async (event) => {
-      let msg;
-      try {
-        msg = JSON.parse(event.data);
-      } catch (e) {
-        return;
+    // Initialize WebRTC Peer using standard open STUN server (zero API keys)
+    peer = new Peer({
+      debug: 1,
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' }
+        ]
       }
+    });
 
-      switch (msg.type) {
-        case 'join-status':
-          if (msg.status === 'waiting-for-approval') {
-            joinModal.style.display = 'none';
-            waitingModal.style.display = 'flex';
-            updateStatus('waiting', 'Awaiting host consent...');
-          }
-          break;
+    peer.on('open', (id) => {
+      console.log('Controller Peer initialized with ID:', id);
+      joinModal.style.display = 'none';
+      waitingModal.style.display = 'flex';
+      updateStatus('waiting', 'Reaching host browser...');
 
-        case 'permission-result':
-          waitingModal.style.display = 'none';
-          if (!msg.approved) {
-            joinModal.style.display = 'flex';
-            joinErrorMsg.textContent = 'Access request was denied by the host.';
-            updateStatus('', 'Denied');
-            cleanupConnection();
-          } else {
-            canControl = !!msg.canControl;
-            currentRoomId = roomId;
-            currentRoomText.textContent = roomId;
-            sessionBadge.style.display = 'flex';
-            modeBadge.style.display = 'inline-block';
-            disconnectBtn.style.display = 'inline-flex';
-            fullscreenBtn.style.display = 'inline-flex';
+      // Connect data channel to host
+      conn = peer.connect(targetPeerId, { reliable: true });
 
-            if (canControl) {
-              modeBadge.className = 'mode-badge control';
-              modeText.textContent = 'FULL CONTROL';
-              interactionNotice.textContent = '⚡ Click & type inside the frame to control host browser';
-            } else {
-              modeBadge.className = 'mode-badge';
-              modeText.textContent = 'VIEW ONLY';
-              interactionNotice.textContent = '👁️ Host granted View-Only access';
-            }
+      conn.on('open', () => {
+        console.log('Data connection opened to host:', targetPeerId);
+        updateStatus('waiting', 'Awaiting host consent...');
+        // Send authentication PIN
+        conn.send({
+          type: 'auth',
+          pin: pin.trim(),
+          clientId: 'Web Controller (' + (navigator.platform || 'Browser') + ')'
+        });
+      });
 
-            updateStatus('waiting', 'Establishing P2P stream...');
-            initWebRTC();
-          }
-          break;
+      conn.on('data', (data) => {
+        handleIncomingData(data);
+      });
 
-        case 'signal':
-          handleSignalingMessage(msg.data);
-          break;
+      conn.on('close', () => {
+        handleSessionEnded('Host closed connection.');
+      });
 
-        case 'host-disconnected':
-        case 'session-ended':
-          handleSessionEnded(msg.message || msg.reason || 'Host ended the session');
-          break;
+      conn.on('error', (err) => {
+        console.error('Connection error:', err);
+        handleSessionEnded('Connection error: ' + err.message);
+      });
+    });
 
-        case 'error':
-          joinErrorMsg.textContent = msg.message;
-          waitingModal.style.display = 'none';
-          joinModal.style.display = 'flex';
-          updateStatus('', 'Error');
-          cleanupConnection();
-          break;
-      }
-    };
+    // Listen for incoming live media stream from Host
+    peer.on('call', (call) => {
+      activeCall = call;
+      console.log('Received media call from host. Answering...');
+      call.answer(); // Answer without sending audio/video back
 
-    ws.onerror = () => {
-      joinErrorMsg.textContent = 'Could not connect to signaling server.';
-      updateStatus('', 'Error');
-    };
-
-    ws.onclose = () => {
-      if (currentRoomId) {
-        handleSessionEnded('Disconnected from signaling server.');
-      }
-    };
-  }
-
-  // WebRTC initialization (Controller side)
-  function initWebRTC() {
-    peerConnection = new RTCPeerConnection(rtcConfig);
-
-    // ICE Candidate generation
-    peerConnection.onicecandidate = (event) => {
-      if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'signal',
-          data: { candidate: event.candidate }
-        }));
-      }
-    };
-
-    // Receive tab video stream from Host
-    peerConnection.ontrack = (event) => {
-      console.log('Received remote media stream', event.streams);
-      if (remoteVideo.srcObject !== event.streams[0]) {
-        remoteVideo.srcObject = event.streams[0];
+      call.on('stream', (remoteStream) => {
+        console.log('Live video stream attached!');
+        remoteVideo.srcObject = remoteStream;
         updateStatus('connected', 'Live Connected');
         latencyBadge.style.display = 'flex';
-      }
-    };
+      });
 
-    // In WebRTC, the controller receives the dataChannel created by the Host
-    peerConnection.ondatachannel = (event) => {
-      setupDataChannel(event.channel);
-    };
+      call.on('close', () => {
+        handleSessionEnded('Live media stream closed.');
+      });
+    });
 
-    peerConnection.onconnectionstatechange = () => {
-      console.log('WebRTC Connection state:', peerConnection.connectionState);
-      if (peerConnection.connectionState === 'connected') {
-        updateStatus('connected', 'Live P2P');
-      } else if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
-        updateStatus('', 'Stream Lost');
+    peer.on('error', (err) => {
+      console.error('Peer error:', err);
+      if (err.type === 'peer-unavailable') {
+        joinErrorMsg.textContent = 'Room not found. Make sure host has session active.';
+      } else {
+        joinErrorMsg.textContent = 'Connection error: ' + err.type;
       }
-    };
+      waitingModal.style.display = 'none';
+      joinModal.style.display = 'flex';
+      updateStatus('', 'Disconnected');
+      cleanupConnection();
+    });
   }
 
-  async function handleSignalingMessage(data) {
-    if (!peerConnection) return;
+  function handleIncomingData(data) {
+    switch (data.type) {
+      case 'auth-failed':
+        joinErrorMsg.textContent = data.error || 'Incorrect PIN';
+        waitingModal.style.display = 'none';
+        joinModal.style.display = 'flex';
+        updateStatus('', 'Auth Failed');
+        cleanupConnection();
+        break;
 
-    if (data.offer) {
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
+      case 'permission-result':
+        waitingModal.style.display = 'none';
+        if (!data.approved) {
+          joinModal.style.display = 'flex';
+          joinErrorMsg.textContent = 'Access request was denied by the host.';
+          updateStatus('', 'Access Denied');
+          cleanupConnection();
+        } else {
+          canControl = !!data.canControl;
+          currentRoomText.textContent = currentRoomId;
+          sessionBadge.style.display = 'flex';
+          modeBadge.style.display = 'inline-block';
+          disconnectBtn.style.display = 'inline-flex';
+          fullscreenBtn.style.display = 'inline-flex';
 
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'signal',
-          data: { answer }
-        }));
-      }
-    } else if (data.answer) {
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-    } else if (data.candidate) {
-      try {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-      } catch (e) {
-        console.error('Error adding ICE candidate:', e);
-      }
+          if (canControl) {
+            modeBadge.className = 'mode-badge control';
+            modeText.textContent = 'FULL CONTROL';
+            interactionNotice.textContent = '⚡ Click & type inside the frame to control host browser';
+          } else {
+            modeBadge.className = 'mode-badge';
+            modeText.textContent = 'VIEW ONLY';
+            interactionNotice.textContent = '👁️ Host granted View-Only access';
+          }
+
+          updateStatus('connected', 'Streaming...');
+          startLatencyPing();
+        }
+        break;
+
+      case 'pong':
+        const rtt = Math.round(performance.now() - data.time);
+        latencyText.textContent = `${rtt} ms`;
+        break;
+
+      case 'session-ended':
+        handleSessionEnded(data.reason || 'Host ended session');
+        break;
     }
   }
 
-  function setupDataChannel(channel) {
-    dataChannel = channel;
-    dataChannel.onopen = () => {
-      console.log('Data channel open. Ready to send inputs.');
-      // Start ping/latency measurements
-      pingInterval = setInterval(() => {
-        if (dataChannel && dataChannel.readyState === 'open') {
-          lastPingTimestamp = performance.now();
-          dataChannel.send(JSON.stringify({ type: 'ping', time: lastPingTimestamp }));
-        }
-      }, 2000);
-    };
-
-    dataChannel.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'pong') {
-          const rtt = Math.round(performance.now() - msg.time);
-          latencyText.textContent = `${rtt} ms`;
-        }
-      } catch (e) {}
-    };
-
-    dataChannel.onclose = () => {
-      if (pingInterval) clearInterval(pingInterval);
-    };
+  function startLatencyPing() {
+    if (pingInterval) clearInterval(pingInterval);
+    pingInterval = setInterval(() => {
+      if (conn && conn.open) {
+        lastPingTimestamp = performance.now();
+        conn.send({ type: 'ping', time: lastPingTimestamp });
+      }
+    }, 2000);
   }
 
   // --- Input Event Capture & Dispatch ---
   function sendInput(payload) {
     if (!canControl) return;
-    if (!dataChannel || dataChannel.readyState !== 'open') return;
-    dataChannel.send(JSON.stringify(payload));
+    if (!conn || !conn.open) return;
+    conn.send(payload);
   }
 
-  // Calculate coordinates normalized to host tab resolution
   function getCoordinates(event) {
     const rect = remoteVideo.getBoundingClientRect();
-    const x = (event.clientX - rect.left) / rect.width;
-    const y = (event.clientY - rect.top) / rect.height;
-    return {
-      x: Math.max(0, Math.min(1, x)),
-      y: Math.max(0, Math.min(1, y))
-    };
+    const videoWidth = remoteVideo.videoWidth || rect.width;
+    const videoHeight = remoteVideo.videoHeight || rect.height;
+
+    if (!videoWidth || !videoHeight) {
+      const x = (event.clientX - rect.left) / rect.width;
+      const y = (event.clientY - rect.top) / rect.height;
+      return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+    }
+
+    const videoRatio = videoWidth / videoHeight;
+    const elementRatio = rect.width / rect.height;
+
+    let renderWidth = rect.width;
+    let renderHeight = rect.height;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (elementRatio > videoRatio) {
+      // Letterboxed on left and right
+      renderWidth = rect.height * videoRatio;
+      offsetX = (rect.width - renderWidth) / 2;
+    } else {
+      // Letterboxed on top and bottom
+      renderHeight = rect.width / videoRatio;
+      offsetY = (rect.height - renderHeight) / 2;
+    }
+
+    const clickX = event.clientX - rect.left - offsetX;
+    const clickY = event.clientY - rect.top - offsetY;
+
+    const normX = Math.max(0, Math.min(1, clickX / renderWidth));
+    const normY = Math.max(0, Math.min(1, clickY / renderHeight));
+
+    return { x: normX, y: normY };
   }
 
   let lastMoveTime = 0;
@@ -323,6 +290,30 @@
     });
   });
 
+  remoteVideo.addEventListener('click', (e) => {
+    if (!canControl) return;
+    const coords = getCoordinates(e);
+    sendInput({
+      type: 'input-mouse',
+      action: 'click',
+      button: e.button === 2 ? 'right' : (e.button === 1 ? 'middle' : 'left'),
+      x: coords.x,
+      y: coords.y
+    });
+  });
+
+  remoteVideo.addEventListener('dblclick', (e) => {
+    if (!canControl) return;
+    const coords = getCoordinates(e);
+    sendInput({
+      type: 'input-mouse',
+      action: 'dblclick',
+      button: 'left',
+      x: coords.x,
+      y: coords.y
+    });
+  });
+
   remoteVideo.addEventListener('wheel', (e) => {
     if (!canControl) return;
     e.preventDefault();
@@ -336,18 +327,14 @@
     });
   }, { passive: false });
 
-  // Prevent default right-click menu on the remote video so controller can right-click remote pages
   remoteVideo.addEventListener('contextmenu', (e) => {
     if (canControl) e.preventDefault();
   });
 
-  // Keyboard capture when clicking on video area
   window.addEventListener('keydown', (e) => {
     if (!canControl) return;
-    // Don't capture when typing in modal inputs
     if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
 
-    // Send keydown
     sendInput({
       type: 'input-key',
       action: 'down',
@@ -360,7 +347,6 @@
       metaKey: e.metaKey
     });
 
-    // Prevent scrolling parent window with Space/Arrows
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Backspace'].includes(e.code)) {
       e.preventDefault();
     }
@@ -382,17 +368,17 @@
   // --- Session Cleanup ---
   function cleanupConnection() {
     if (pingInterval) clearInterval(pingInterval);
-    if (dataChannel) {
-      dataChannel.close();
-      dataChannel = null;
+    if (conn) {
+      conn.close();
+      conn = null;
     }
-    if (peerConnection) {
-      peerConnection.close();
-      peerConnection = null;
+    if (activeCall) {
+      activeCall.close();
+      activeCall = null;
     }
-    if (ws) {
-      ws.close();
-      ws = null;
+    if (peer) {
+      peer.destroy();
+      peer = null;
     }
     currentRoomId = null;
     canControl = false;
@@ -419,9 +405,8 @@
     e.preventDefault();
     const room = roomIdInput.value;
     const pin = pinInput.value;
-    const serverUrl = serverWsInput.value;
     if (room && pin) {
-      connectToSignaling(room, pin, serverUrl);
+      connectToHost(room, pin);
     }
   });
 
@@ -433,8 +418,8 @@
   });
 
   disconnectBtn.addEventListener('click', () => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'stop-session' }));
+    if (conn && conn.open) {
+      conn.send({ type: 'session-ended', reason: 'Controller disconnected' });
     }
     handleSessionEnded('You disconnected from the session.');
   });
