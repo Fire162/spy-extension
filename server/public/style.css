@@ -184,6 +184,8 @@ body {
   overscroll-behavior: none;
   -webkit-touch-callout: none;
   user-select: none;
+  overflow: hidden;
+  border-radius: 4px;
 }
 
 #remoteVideo {

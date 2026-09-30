@@ -69,6 +69,7 @@
   let activeCall = null;
   let currentRoomId = null;
   let canControl = false;
+  let activePortion = null;
   let pingInterval = null;
   let lastPingTimestamp = 0;
   let isMuted = false;
@@ -308,11 +309,8 @@
           disconnectBtn.style.display = 'inline-flex';
           fullscreenBtn.style.display = 'inline-flex';
 
-          if (data.portionEnabled) {
-            if (portionBadge) portionBadge.style.display = 'inline-flex';
-          } else {
-            if (portionBadge) portionBadge.style.display = 'none';
-          }
+          activePortion = (!canControl && data.portionEnabled) ? data.portion : null;
+          updatePortionDisplay();
 
           if (canControl) {
             modeBadge.className = 'mode-badge control';
@@ -326,7 +324,7 @@
           } else {
             modeBadge.className = 'mode-badge';
             modeText.textContent = 'VIEW ONLY';
-            interactionNotice.textContent = data.portionEnabled ? '🔒 Host shared a specific screen portion (View-Only)' : '👁️ Host granted View-Only access';
+            interactionNotice.textContent = activePortion ? '🔒 Viewing Host Selected Portion (View-Only)' : '👁️ Host granted View-Only access';
             if (navBarToggleBtn) navBarToggleBtn.style.display = 'none';
             if (navToolbar) navToolbar.style.display = 'none';
           }
@@ -343,11 +341,8 @@
 
       case 'role-update':
         canControl = !!data.canControl;
-        if (data.portionEnabled) {
-          if (portionBadge) portionBadge.style.display = 'inline-flex';
-        } else {
-          if (portionBadge) portionBadge.style.display = 'none';
-        }
+        activePortion = (!canControl && data.portionEnabled) ? data.portion : null;
+        updatePortionDisplay();
 
         if (canControl) {
           modeBadge.className = 'mode-badge control';
@@ -361,18 +356,19 @@
         } else {
           modeBadge.className = 'mode-badge';
           modeText.textContent = 'VIEW ONLY';
-          interactionNotice.textContent = data.portionEnabled ? '🔒 Host shared a specific screen portion (View-Only)' : '👁️ Host changed your access to View-Only';
+          interactionNotice.textContent = activePortion ? '🔒 Viewing Host Selected Portion (View-Only)' : '👁️ Host changed your access to View-Only';
           if (navBarToggleBtn) navBarToggleBtn.style.display = 'none';
           if (navToolbar) navToolbar.style.display = 'none';
         }
         break;
 
       case 'portion-update':
-        if (data.portionEnabled) {
-          if (portionBadge) portionBadge.style.display = 'inline-flex';
-          interactionNotice.textContent = '🔒 Host updated the shared screen portion (View-Only)';
-        } else {
-          if (portionBadge) portionBadge.style.display = 'none';
+        activePortion = (!canControl && data.portionEnabled) ? data.portion : null;
+        updatePortionDisplay();
+        if (activePortion) {
+          interactionNotice.textContent = '🔒 Viewing Host Selected Portion (View-Only)';
+        } else if (!canControl) {
+          interactionNotice.textContent = '👁️ Host granted View-Only access';
         }
         break;
 
@@ -535,12 +531,60 @@
     });
   }, { passive: false });
 
-  remoteVideo.addEventListener('contextmenu', (e) => {
-    if (canControl) e.preventDefault();
-  });
+  // --- Portion Crop Viewport Display (View-Only Mode) ---
+  function updatePortionDisplay() {
+    if (!activePortion || canControl) {
+      if (portionBadge) portionBadge.style.display = 'none';
+      remoteVideo.style.clipPath = '';
+      if (currentZoom <= 1.02) {
+        remoteVideo.style.transform = '';
+        remoteVideo.style.transformOrigin = '';
+      } else {
+        remoteVideo.style.transform = `scale(${currentZoom}) translate(${panX}px, ${panY}px)`;
+      }
+      return;
+    }
+
+    if (portionBadge) {
+      portionBadge.style.display = 'inline-flex';
+      const w = activePortion.width || 100;
+      const h = activePortion.height || 50;
+      const badgeText = portionBadge.querySelector('span');
+      if (badgeText) badgeText.textContent = `🔒 PORTION (${w}% × ${h}%)`;
+    }
+
+    const x = Math.max(0, Math.min(95, activePortion.x || 0));
+    const y = Math.max(0, Math.min(95, activePortion.y || 0));
+    const w = Math.max(5, Math.min(100 - x, activePortion.width || 100));
+    const h = Math.max(5, Math.min(100 - y, activePortion.height || 100));
+
+    const top = y;
+    const right = 100 - (x + w);
+    const bottom = 100 - (y + h);
+    const left = x;
+
+    const scale = Math.min(100 / w, 100 / h);
+    const centerX = x + w / 2;
+    const centerY = y + h / 2;
+
+    remoteVideo.style.transformOrigin = `${centerX}% ${centerY}%`;
+    const finalScale = scale * currentZoom;
+    remoteVideo.style.transform = `scale(${finalScale.toFixed(3)}) translate(${panX}px, ${panY}px)`;
+    remoteVideo.style.clipPath = `inset(${top}% ${right}% ${bottom}% ${left}%)`;
+    remoteVideo.style.transition = 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), clip-path 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
+  }
 
   // --- Pinch-to-Zoom & Pan Logic ---
   function updateVideoTransform() {
+    if (activePortion && !canControl) {
+      updatePortionDisplay();
+      if (zoomPill) {
+        zoomPill.style.display = currentZoom > 1.05 ? 'flex' : 'none';
+        if (zoomLevelText) zoomLevelText.textContent = `🔍 ${currentZoom.toFixed(1)}x`;
+      }
+      return;
+    }
+
     if (currentZoom <= 1.02) {
       currentZoom = 1.0;
       panX = 0;
@@ -925,6 +969,11 @@
     }
     if (navBarToggleBtn) navBarToggleBtn.style.display = 'none';
     if (portionBadge) portionBadge.style.display = 'none';
+    activePortion = null;
+    remoteVideo.style.clipPath = '';
+    remoteVideo.style.transform = '';
+    remoteVideo.style.transformOrigin = '';
+    remoteVideo.style.transition = '';
     resetZoom();
     if (remoteVideo.srcObject) {
       remoteVideo.srcObject.getTracks().forEach(t => t.stop());
