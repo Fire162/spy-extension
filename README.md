@@ -3,6 +3,11 @@
 > **Peer-to-Peer Remote Browser Control with Mutual Two-Party Consent.**  
 > Zero third-party cloud dependencies &bull; Ultra-low latency WebRTC &bull; Chrome DevTools Protocol (CDP) &bull; Self-Hostable.
 
+> [!WARNING]
+> **DISCLAIMER & ACCEPTABLE USE WARNING**  
+> This software is created **strictly for legitimate, consensual remote collaboration, tech support, and co-browsing between two willing parties**.  
+> The authors and contributors **expressly disclaim all liability and responsibility** for any misuse, unauthorized surveillance, malicious activity, damage, or harm caused by the use or modification of this project. Users are solely responsible for complying with all applicable laws and obtaining explicit authorization before initiating any remote control session.
+
 ---
 
 ## 📖 Overview
@@ -127,6 +132,14 @@ By default, the server starts on `http://localhost:3000`.
 To make the signaling server accessible across the internet:
 1. Deploy `server/` to any Node.js host (e.g., VPS, Docker, Render, Railway, Fly.io, or AWS EC2).
 2. Configure your custom WebSocket URL (e.g. `wss://signaling.yourdomain.com`) in the extension popup under **⚙️ Signaling Server Settings**.
+
+---
+
+## ⚠️ Disclaimer & Legal Notice
+
+1. **Mutual Consent Only**: This software is designed and intended solely to allow two consenting parties to share and control a browser session transparently.
+2. **No Liability**: The author(s) and copyright holder(s) of this project are **not responsible or liable** for any illicit, unethical, or harmful use of this software, including but not limited to unapproved computer access, stalking, harassment, data breaches, or legal violations committed by third parties.
+3. **End-User Responsibility**: You are solely responsible for ensuring your use of this software conforms with local and international cyber laws, computer fraud statutes, and privacy regulations. Any unauthorized use against an unwilling individual or unauthorized device is strictly prohibited.
 
 ---
 
