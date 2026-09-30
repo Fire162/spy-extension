@@ -103,7 +103,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const roomId = `SPY-${randomCode}`;
     const pin = String(Math.floor(1000 + Math.random() * 9000));
 
-    const serverUrl = serverUrlInput.value.trim() || 'ws://localhost:3000';
+    const serverUrl = serverUrlInput ? serverUrlInput.value.trim() : '';
     const allowControl = allowControlToggle.checked;
 
     startSessionBtn.disabled = true;
