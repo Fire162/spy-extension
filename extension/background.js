@@ -179,13 +179,33 @@ async function handleInputEvent(input) {
         });
       }
     } else if (input.type === 'input-wheel') {
+      const deltaX = input.deltaX || 0;
+      const deltaY = input.deltaY || 0;
+
+      // 1. Native CDP mouseWheel event
       await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
         type: 'mouseWheel',
         x: targetX,
         y: targetY,
-        deltaX: input.deltaX || 0,
-        deltaY: input.deltaY || 0
+        deltaX: deltaX,
+        deltaY: deltaY
       });
+
+      // 2. Dual-layer DOM scroll fallback: ensures scrolling on all sites
+      try {
+        await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+          expression: `
+            (() => {
+              const el = document.elementFromPoint(${targetX}, ${targetY});
+              if (el && (el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth)) {
+                el.scrollBy({ left: ${deltaX}, top: ${deltaY}, behavior: 'auto' });
+              } else {
+                window.scrollBy({ left: ${deltaX}, top: ${deltaY}, behavior: 'auto' });
+              }
+            })()
+          `
+        });
+      } catch (e) {}
     } else if (input.type === 'input-key') {
       const isDown = input.action === 'down';
       await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {

@@ -420,27 +420,19 @@
     const diffY = touch.clientY - lastTouchY;
     const totalDist = Math.hypot(touch.clientX - touchStartX, touch.clientY - touchStartY);
 
-    if (totalDist > 10) {
+    if (totalDist > 8) {
       isTouchDragging = true;
     }
 
-    if (touchMode === 'scroll') {
-      // Scroll mode: finger movement translates to page scrolling
+    // Natural Mobile Scrolling: dragging fingers on touch screens scrolls the remote page
+    if (isTouchDragging) {
       e.preventDefault();
       const coords = getCoordinates(touch.clientX, touch.clientY);
+      // Invert delta: moving finger UP scrolls DOWN
       sendInput({
         type: 'input-wheel',
-        deltaX: -diffX * 2,
-        deltaY: -diffY * 2,
-        x: coords.x,
-        y: coords.y
-      });
-    } else {
-      // Tap/Drag mode: moves the remote cursor
-      const coords = getCoordinates(touch.clientX, touch.clientY);
-      sendInput({
-        type: 'input-mouse',
-        action: 'move',
+        deltaX: -diffX * 3,
+        deltaY: -diffY * 3,
         x: coords.x,
         y: coords.y
       });
@@ -464,8 +456,8 @@
     if (!canControl) return;
     const elapsed = performance.now() - touchStartTime;
 
-    // Quick tap without significant movement = Click
-    if (!isTouchDragging && elapsed < 450) {
+    // Quick tap without drag = Instant Click
+    if (!isTouchDragging && elapsed < 400) {
       const coords = getCoordinates(touchStartX, touchStartY);
       showTouchRipple(touchStartX, touchStartY);
       navigator.vibrate?.(25);

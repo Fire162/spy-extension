@@ -58,7 +58,7 @@ async function startSession({ streamId, roomId, pin }) {
         mandatory: {
           chromeMediaSource: 'tab',
           chromeMediaSourceId: streamId,
-          maxFrameRate: 60,
+          maxFrameRate: 144,
           maxWidth: 1920,
           maxHeight: 1080
         }
