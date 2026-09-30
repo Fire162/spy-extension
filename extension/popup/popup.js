@@ -246,7 +246,61 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else if (val === 'center') {
         portionX.value = 25; portionY.value = 25; portionW.value = 50; portionH.value = 50;
       } else if (val === 'mainContent') {
-        portionX.value = 0; portionY.value = 0; portionW.value = 100; portionH.value = 70;
+        const targetTabId = currentTab ? currentTab.id : null;
+        if (targetTabId) {
+          chrome.scripting.executeScript({
+            target: { tabId: targetTabId },
+            func: () => {
+              const candidates = [
+                'main',
+                '[role="main"]',
+                'article',
+                '#main-content',
+                '#main',
+                '#content',
+                '.main-content',
+                '.content-area',
+                '#article',
+                '.post-content',
+                '.entry-content'
+              ];
+              for (const sel of candidates) {
+                const el = document.querySelector(sel);
+                if (el) {
+                  const r = el.getBoundingClientRect();
+                  if (r.width >= 100 && r.height >= 80) {
+                    return {
+                      x: Math.max(0, Math.min(95, Math.round((r.left / window.innerWidth) * 100))),
+                      y: Math.max(0, Math.min(95, Math.round((r.top / window.innerHeight) * 100))),
+                      w: Math.max(5, Math.min(100 - Math.round((r.left / window.innerWidth) * 100), Math.round((r.width / window.innerWidth) * 100))),
+                      h: Math.max(5, Math.min(100 - Math.round((r.top / window.innerHeight) * 100), Math.round((r.height / window.innerHeight) * 100)))
+                    };
+                  }
+                }
+              }
+              return null;
+            }
+          }).then(results => {
+            if (results && results[0] && results[0].result) {
+              const res = results[0].result;
+              portionX.value = res.x;
+              portionY.value = res.y;
+              portionW.value = res.w;
+              portionH.value = res.h;
+            } else {
+              portionX.value = 0; portionY.value = 0; portionW.value = 100; portionH.value = 70;
+            }
+            updatePortionPreview();
+            sendPortionUpdate();
+          }).catch(() => {
+            portionX.value = 0; portionY.value = 0; portionW.value = 100; portionH.value = 70;
+            updatePortionPreview();
+            sendPortionUpdate();
+          });
+          return;
+        } else {
+          portionX.value = 0; portionY.value = 0; portionW.value = 100; portionH.value = 70;
+        }
       }
       updatePortionPreview();
       sendPortionUpdate();

@@ -92,6 +92,78 @@
       background: rgba(239, 68, 68, 0.15);
     }
 
+    /* Tool Buttons in Banner */
+    .btn-tool {
+      background: rgba(56, 189, 248, 0.15);
+      border: 1px solid rgba(56, 189, 248, 0.45);
+      color: #38bdf8;
+      border-radius: 16px;
+      padding: 4px 11px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.18s ease;
+      white-space: nowrap;
+    }
+
+    .btn-tool:hover {
+      background: rgba(56, 189, 248, 0.3);
+      border-color: #38bdf8;
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
+      transform: translateY(-1px);
+    }
+
+    .btn-tool.active {
+      background: #0284c7;
+      color: #ffffff;
+      border-color: #38bdf8;
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.6);
+    }
+
+    .btn-tool.btn-main {
+      background: rgba(16, 185, 129, 0.18);
+      border-color: rgba(16, 185, 129, 0.5);
+      color: #34d399;
+    }
+
+    .btn-tool.btn-main:hover {
+      background: rgba(16, 185, 129, 0.32);
+      border-color: #34d399;
+      box-shadow: 0 0 10px rgba(16, 185, 129, 0.45);
+    }
+
+    /* Element Inspector Hover Box */
+    .element-hover-box {
+      position: absolute;
+      display: none;
+      border: 2px dashed #38bdf8;
+      background: rgba(56, 189, 248, 0.22);
+      box-shadow: 0 0 20px rgba(56, 189, 248, 0.4);
+      border-radius: 4px;
+      pointer-events: none;
+      z-index: 6;
+      transition: all 0.05s ease-out;
+    }
+
+    .element-hover-tag {
+      position: absolute;
+      top: -26px;
+      left: 0;
+      background: #0284c7;
+      color: #ffffff;
+      font-size: 11px;
+      font-family: monospace;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+      pointer-events: none;
+    }
+
     /* Selection Box with Infinite Scrim Cutout */
     .snip-box {
       position: absolute;
@@ -242,12 +314,22 @@
   topBanner.className = 'top-banner';
   topBanner.innerHTML = `
     <span class="icon">✂️</span>
-    <span>Drag to select the screen area to share</span>
+    <span class="banner-hint">Drag screen area or pick:</span>
+    <button class="btn-tool btn-main" id="btnSnapMain" title="Snap to main content element">🎯 Snap &lt;main&gt;</button>
+    <button class="btn-tool" id="btnPickElement" title="Hover & click any element or div to select">🔍 Pick Element</button>
     <span class="key-hint">Enter</span> to apply
     <span class="key-hint">Esc</span> to cancel
     <button class="btn-close-banner" title="Cancel Snipping">✕</button>
   `;
   overlay.appendChild(topBanner);
+
+  // Element hover box for interactive picking
+  const hoverHighlightBox = document.createElement('div');
+  hoverHighlightBox.className = 'element-hover-box';
+  const hoverTag = document.createElement('div');
+  hoverTag.className = 'element-hover-tag';
+  hoverHighlightBox.appendChild(hoverTag);
+  overlay.appendChild(hoverHighlightBox);
 
   // Selection Box
   const snipBox = document.createElement('div');
@@ -284,10 +366,98 @@
   let isDrawing = false;
   let isMoving = false;
   let isResizing = false;
+  let isPicking = false;
+  let hoveredElement = null;
   let resizeDir = '';
   let startX = 0, startY = 0;
   let moveOffsetX = 0, moveOffsetY = 0;
   let currentRect = { left: 0, top: 0, width: 0, height: 0 };
+
+  const btnSnapMain = topBanner.querySelector('#btnSnapMain');
+  const btnPickElement = topBanner.querySelector('#btnPickElement');
+
+  function showToast(text, duration = 1500) {
+    const old = shadow.querySelector('.snip-toast');
+    if (old) old.remove();
+    const toast = document.createElement('div');
+    toast.className = 'snip-toast';
+    toast.textContent = text;
+    shadow.appendChild(toast);
+    setTimeout(() => {
+      if (toast.parentNode) toast.remove();
+    }, duration);
+  }
+
+  function togglePickerMode(force) {
+    isPicking = typeof force === 'boolean' ? force : !isPicking;
+    if (isPicking) {
+      btnPickElement.classList.add('active');
+      btnPickElement.innerHTML = '🔍 Picking... (Click div)';
+      showToast('🔍 Hover over any div or element and click to select');
+    } else {
+      btnPickElement.classList.remove('active');
+      btnPickElement.innerHTML = '🔍 Pick Element';
+      hoverHighlightBox.style.display = 'none';
+      hoveredElement = null;
+    }
+  }
+
+  function findMainElement() {
+    const candidates = [
+      'main',
+      '[role="main"]',
+      'article',
+      '#main-content',
+      '#main',
+      '#content',
+      '.main-content',
+      '.content-area',
+      '#article',
+      '.post-content',
+      '.entry-content'
+    ];
+    for (const sel of candidates) {
+      const el = document.querySelector(sel);
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width >= 100 && rect.height >= 80) {
+          return { el, rect };
+        }
+      }
+    }
+    return null;
+  }
+
+  function snapToMain() {
+    togglePickerMode(false);
+    const found = findMainElement();
+    if (found) {
+      const { el, rect } = found;
+      currentRect = {
+        left: Math.max(0, rect.left),
+        top: Math.max(0, rect.top),
+        width: Math.min(window.innerWidth - Math.max(0, rect.left), rect.width),
+        height: Math.min(window.innerHeight - Math.max(0, rect.top), rect.height)
+      };
+      updateBoxDOM();
+      finishDrawing();
+      const tag = el.tagName.toLowerCase();
+      const id = el.id ? `#${el.id}` : '';
+      showToast(`🎯 Snapped to <${tag}${id}>`);
+    } else {
+      showToast('⚠️ No <main> or article element detected on page');
+    }
+  }
+
+  btnSnapMain.addEventListener('click', (e) => {
+    e.stopPropagation();
+    snapToMain();
+  });
+
+  btnPickElement.addEventListener('click', (e) => {
+    e.stopPropagation();
+    togglePickerMode();
+  });
 
   function updateBoxDOM() {
     snipBox.style.display = 'block';
@@ -346,10 +516,7 @@
       }
     });
 
-    const toast = document.createElement('div');
-    toast.className = 'snip-toast';
-    toast.textContent = `🔒 Portion Applied: ${width}% × ${height}% (X: ${x}%, Y: ${y}%)`;
-    shadow.appendChild(toast);
+    showToast(`🔒 Portion Applied: ${width}% × ${height}% (X: ${x}%, Y: ${y}%)`, 1000);
 
     setTimeout(() => {
       cleanup();
@@ -365,6 +532,25 @@
   overlay.addEventListener('mousedown', (e) => {
     // If clicked inside action bar, banner or handles, don't initiate canvas drag
     if (e.composedPath().some(el => el === actionBar || el === topBanner)) {
+      return;
+    }
+
+    if (isPicking) {
+      if (hoveredElement) {
+        const r = hoveredElement.getBoundingClientRect();
+        currentRect = {
+          left: Math.max(0, r.left),
+          top: Math.max(0, r.top),
+          width: Math.min(window.innerWidth - Math.max(0, r.left), r.width),
+          height: Math.min(window.innerHeight - Math.max(0, r.top), r.height)
+        };
+        updateBoxDOM();
+        finishDrawing();
+        const tag = hoveredElement.tagName.toLowerCase();
+        showToast(`🎯 Selected <${tag}> element`);
+      }
+      togglePickerMode(false);
+      e.stopPropagation();
       return;
     }
 
@@ -399,6 +585,34 @@
   });
 
   window.addEventListener('mousemove', (e) => {
+    if (isPicking) {
+      const elements = document.elementsFromPoint(e.clientX, e.clientY);
+      const target = elements.find(el => {
+        return el !== container && !container.contains(el) && el !== document.documentElement && el !== document.body;
+      });
+
+      if (target) {
+        hoveredElement = target;
+        const r = target.getBoundingClientRect();
+        hoverHighlightBox.style.display = 'block';
+        hoverHighlightBox.style.left = `${Math.max(0, r.left)}px`;
+        hoverHighlightBox.style.top = `${Math.max(0, r.top)}px`;
+        hoverHighlightBox.style.width = `${Math.min(window.innerWidth - Math.max(0, r.left), r.width)}px`;
+        hoverHighlightBox.style.height = `${Math.min(window.innerHeight - Math.max(0, r.top), r.height)}px`;
+
+        const tag = target.tagName.toLowerCase();
+        const id = target.id ? `#${target.id}` : '';
+        const cls = target.className && typeof target.className === 'string'
+          ? '.' + target.className.trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.')
+          : '';
+        hoverTag.textContent = `<${tag}${id}${cls}> (${Math.round(r.width)}×${Math.round(r.height)}px) — Click to Select`;
+      } else {
+        hoverHighlightBox.style.display = 'none';
+        hoveredElement = null;
+      }
+      return;
+    }
+
     if (isDrawing) {
       const curX = e.clientX;
       const curY = e.clientY;
@@ -474,7 +688,11 @@
   function onKeyDown(e) {
     if (e.key === 'Escape') {
       e.preventDefault();
-      cleanup();
+      if (isPicking) {
+        togglePickerMode(false);
+      } else {
+        cleanup();
+      }
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (currentRect.width >= 25 && currentRect.height >= 25) {
