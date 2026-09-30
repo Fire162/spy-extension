@@ -42,10 +42,15 @@ async function startSession({ streamId, roomId, pin, allowControl }) {
   currentPin = String(pin).trim();
   currentAllowControl = !!allowControl;
 
-  // 1. Capture Tab Media Stream
+  // 1. Capture Tab Audio & Video Media Stream
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
+      audio: {
+        mandatory: {
+          chromeMediaSource: 'tab',
+          chromeMediaSourceId: streamId
+        }
+      },
       video: {
         mandatory: {
           chromeMediaSource: 'tab',
@@ -53,14 +58,37 @@ async function startSession({ streamId, roomId, pin, allowControl }) {
         }
       }
     });
-    console.log('Tab media stream captured successfully');
+    console.log('Tab audio & video media stream captured successfully');
+
+    // Route audio to host speakers so the host tab audio remains audible locally
+    try {
+      const audioCtx = new AudioContext();
+      const source = audioCtx.createMediaStreamSource(mediaStream);
+      source.connect(audioCtx.destination);
+    } catch (e) {
+      console.warn('AudioContext local playback error:', e);
+    }
   } catch (err) {
-    console.error('Failed to get tab media stream:', err);
-    chrome.runtime.sendMessage({
-      type: 'SESSION_ERROR',
-      error: 'Failed to capture tab: ' + err.message
-    });
-    return;
+    console.warn('Audio capture failed, falling back to video only:', err);
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          mandatory: {
+            chromeMediaSource: 'tab',
+            chromeMediaSourceId: streamId
+          }
+        }
+      });
+      console.log('Fallback video-only stream captured successfully');
+    } catch (e) {
+      console.error('Failed to get tab media stream:', e);
+      chrome.runtime.sendMessage({
+        type: 'SESSION_ERROR',
+        error: 'Failed to capture tab: ' + e.message
+      });
+      return;
+    }
   }
 
   // 2. Initialize WebRTC Host Peer

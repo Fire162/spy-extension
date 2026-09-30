@@ -1,6 +1,7 @@
 /**
  * Spy Extension - Web Controller Client (GitHub Pages / Standalone)
- * Powered by open WebRTC P2P (PeerJS). Zero API keys, zero auth, zero config.
+ * Powered by open WebRTC P2P (PeerJS).
+ * Full Mobile Touch, Virtual Keyboard, and Live Tab Audio support.
  */
 
 (function () {
@@ -28,6 +29,23 @@
   const streamWrapper = document.getElementById('streamWrapper');
   const interactionNotice = document.getElementById('interactionNotice');
 
+  // Audio Elements
+  const audioToggleBtn = document.getElementById('audioToggleBtn');
+  const audioIcon = document.getElementById('audioIcon');
+  const audioNotice = document.getElementById('audioNotice');
+  const unmuteNoticeBtn = document.getElementById('unmuteNoticeBtn');
+
+  // Mobile Elements
+  const mobileDock = document.getElementById('mobileDock');
+  const mobileKeyboardBtn = document.getElementById('mobileKeyboardBtn');
+  const mobileDockKeyboardBtn = document.getElementById('mobileDockKeyboardBtn');
+  const mobileModeTapBtn = document.getElementById('mobileModeTapBtn');
+  const mobileModeScrollBtn = document.getElementById('mobileModeScrollBtn');
+  const mobileInputSheet = document.getElementById('mobileInputSheet');
+  const mobileTextInput = document.getElementById('mobileTextInput');
+  const mobileSendTextBtn = document.getElementById('mobileSendTextBtn');
+  const closeSheetBtn = document.getElementById('closeSheetBtn');
+
   // Connection State
   let peer = null;
   let conn = null;
@@ -36,12 +54,22 @@
   let canControl = false;
   let pingInterval = null;
   let lastPingTimestamp = 0;
+  let isMuted = false;
+
+  // Touch State
+  let touchMode = 'tap'; // 'tap' or 'scroll'
+  let touchStartX = 0;
+  let touchStartY = 0;
+  let touchStartTime = 0;
+  let lastTouchX = 0;
+  let lastTouchY = 0;
+  let isTouchDragging = false;
 
   function sanitizePeerId(raw) {
     return 'spy-' + raw.toLowerCase().replace(/[^a-z0-9]/g, '');
   }
 
-  // Parse room and pin from either URL Hash (#room=...&pin=...) or Query string (?room=...&pin=...)
+  // Parse room and pin from URL
   function parseUrlParams() {
     let params = new URLSearchParams(window.location.search);
     if (!params.has('room') && window.location.hash) {
@@ -67,7 +95,6 @@
 
     const targetPeerId = sanitizePeerId(roomId);
 
-    // Initialize WebRTC Peer using standard open STUN server (zero API keys)
     peer = new Peer({
       debug: 1,
       config: {
@@ -84,13 +111,11 @@
       waitingModal.style.display = 'flex';
       updateStatus('waiting', 'Reaching host browser...');
 
-      // Connect data channel to host
       conn = peer.connect(targetPeerId, { reliable: true });
 
       conn.on('open', () => {
         console.log('Data connection opened to host:', targetPeerId);
-        updateStatus('waiting', 'Awaiting host consent...');
-        // Send authentication PIN
+        updateStatus('waiting', 'Awaiting authorization...');
         conn.send({
           type: 'auth',
           pin: pin.trim(),
@@ -112,17 +137,34 @@
       });
     });
 
-    // Listen for incoming live media stream from Host
+    // Receive live audio and video stream
     peer.on('call', (call) => {
       activeCall = call;
-      console.log('Received media call from host. Answering...');
-      call.answer(); // Answer without sending audio/video back
+      console.log('Received media call with audio/video. Answering...');
+      call.answer();
 
       call.on('stream', (remoteStream) => {
-        console.log('Live video stream attached!');
+        console.log('Live media stream attached (tracks:', remoteStream.getTracks().length, ')');
         remoteVideo.srcObject = remoteStream;
         updateStatus('connected', 'Live Connected');
         latencyBadge.style.display = 'flex';
+
+        // Check if stream includes audio
+        const hasAudio = remoteStream.getAudioTracks().length > 0;
+        if (hasAudio) {
+          audioToggleBtn.style.display = 'inline-flex';
+          remoteVideo.muted = false;
+
+          // Attempt audio playback (handle browser autoplay restrictions)
+          remoteVideo.play().catch((err) => {
+            console.warn('Autoplay blocked with sound:', err.message);
+            remoteVideo.muted = true;
+            remoteVideo.play();
+            isMuted = true;
+            audioIcon.textContent = '🔇';
+            audioNotice.style.display = 'flex';
+          });
+        }
       });
 
       call.on('close', () => {
@@ -172,14 +214,14 @@
           if (canControl) {
             modeBadge.className = 'mode-badge control';
             modeText.textContent = 'FULL CONTROL';
-            interactionNotice.textContent = '⚡ Click & type inside the frame to control host browser';
+            interactionNotice.textContent = '⚡ Click, tap, or type to control remote browser';
           } else {
             modeBadge.className = 'mode-badge';
             modeText.textContent = 'VIEW ONLY';
             interactionNotice.textContent = '👁️ Host granted View-Only access';
           }
 
-          updateStatus('connected', 'Streaming...');
+          updateStatus('connected', 'Live P2P');
           startLatencyPing();
         }
         break;
@@ -212,14 +254,14 @@
     conn.send(payload);
   }
 
-  function getCoordinates(event) {
+  function getCoordinates(clientX, clientY) {
     const rect = remoteVideo.getBoundingClientRect();
     const videoWidth = remoteVideo.videoWidth || rect.width;
     const videoHeight = remoteVideo.videoHeight || rect.height;
 
     if (!videoWidth || !videoHeight) {
-      const x = (event.clientX - rect.left) / rect.width;
-      const y = (event.clientY - rect.top) / rect.height;
+      const x = (clientX - rect.left) / rect.width;
+      const y = (clientY - rect.top) / rect.height;
       return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
     }
 
@@ -232,17 +274,15 @@
     let offsetY = 0;
 
     if (elementRatio > videoRatio) {
-      // Letterboxed on left and right
       renderWidth = rect.height * videoRatio;
       offsetX = (rect.width - renderWidth) / 2;
     } else {
-      // Letterboxed on top and bottom
       renderHeight = rect.width / videoRatio;
       offsetY = (rect.height - renderHeight) / 2;
     }
 
-    const clickX = event.clientX - rect.left - offsetX;
-    const clickY = event.clientY - rect.top - offsetY;
+    const clickX = clientX - rect.left - offsetX;
+    const clickY = clientY - rect.top - offsetY;
 
     const normX = Math.max(0, Math.min(1, clickX / renderWidth));
     const normY = Math.max(0, Math.min(1, clickY / renderHeight));
@@ -250,14 +290,15 @@
     return { x: normX, y: normY };
   }
 
+  // --- Mouse Listeners (Desktop) ---
   let lastMoveTime = 0;
   remoteVideo.addEventListener('mousemove', (e) => {
     if (!canControl) return;
     const now = performance.now();
-    if (now - lastMoveTime < 16) return; // ~60fps throttle
+    if (now - lastMoveTime < 16) return;
     lastMoveTime = now;
 
-    const coords = getCoordinates(e);
+    const coords = getCoordinates(e.clientX, e.clientY);
     sendInput({
       type: 'input-mouse',
       action: 'move',
@@ -268,7 +309,7 @@
 
   remoteVideo.addEventListener('mousedown', (e) => {
     if (!canControl) return;
-    const coords = getCoordinates(e);
+    const coords = getCoordinates(e.clientX, e.clientY);
     sendInput({
       type: 'input-mouse',
       action: 'down',
@@ -280,7 +321,7 @@
 
   remoteVideo.addEventListener('mouseup', (e) => {
     if (!canControl) return;
-    const coords = getCoordinates(e);
+    const coords = getCoordinates(e.clientX, e.clientY);
     sendInput({
       type: 'input-mouse',
       action: 'up',
@@ -292,7 +333,7 @@
 
   remoteVideo.addEventListener('click', (e) => {
     if (!canControl) return;
-    const coords = getCoordinates(e);
+    const coords = getCoordinates(e.clientX, e.clientY);
     sendInput({
       type: 'input-mouse',
       action: 'click',
@@ -304,7 +345,7 @@
 
   remoteVideo.addEventListener('dblclick', (e) => {
     if (!canControl) return;
-    const coords = getCoordinates(e);
+    const coords = getCoordinates(e.clientX, e.clientY);
     sendInput({
       type: 'input-mouse',
       action: 'dblclick',
@@ -317,7 +358,7 @@
   remoteVideo.addEventListener('wheel', (e) => {
     if (!canControl) return;
     e.preventDefault();
-    const coords = getCoordinates(e);
+    const coords = getCoordinates(e.clientX, e.clientY);
     sendInput({
       type: 'input-wheel',
       deltaX: e.deltaX,
@@ -331,9 +372,80 @@
     if (canControl) e.preventDefault();
   });
 
+  // --- Touch Listeners (Mobile / Tablet) ---
+  remoteVideo.addEventListener('touchstart', (e) => {
+    if (!canControl || e.touches.length === 0) return;
+    const touch = e.touches[0];
+    touchStartX = touch.clientX;
+    touchStartY = touch.clientY;
+    lastTouchX = touch.clientX;
+    lastTouchY = touch.clientY;
+    touchStartTime = performance.now();
+    isTouchDragging = false;
+  }, { passive: true });
+
+  remoteVideo.addEventListener('touchmove', (e) => {
+    if (!canControl || e.touches.length === 0) return;
+    const touch = e.touches[0];
+    const diffX = touch.clientX - lastTouchX;
+    const diffY = touch.clientY - lastTouchY;
+    const totalDist = Math.hypot(touch.clientX - touchStartX, touch.clientY - touchStartY);
+
+    if (totalDist > 10) {
+      isTouchDragging = true;
+    }
+
+    if (touchMode === 'scroll') {
+      // Scroll mode: finger movement translates to page scrolling
+      e.preventDefault();
+      const coords = getCoordinates(touch.clientX, touch.clientY);
+      sendInput({
+        type: 'input-wheel',
+        deltaX: -diffX * 2,
+        deltaY: -diffY * 2,
+        x: coords.x,
+        y: coords.y
+      });
+    } else {
+      // Tap/Drag mode: moves the remote cursor
+      const coords = getCoordinates(touch.clientX, touch.clientY);
+      sendInput({
+        type: 'input-mouse',
+        action: 'move',
+        x: coords.x,
+        y: coords.y
+      });
+    }
+
+    lastTouchX = touch.clientX;
+    lastTouchY = touch.clientY;
+  }, { passive: false });
+
+  remoteVideo.addEventListener('touchend', (e) => {
+    if (!canControl) return;
+    const elapsed = performance.now() - touchStartTime;
+
+    // Quick tap without significant movement = Click
+    if (!isTouchDragging && elapsed < 400) {
+      const coords = getCoordinates(touchStartX, touchStartY);
+      navigator.vibrate?.(25);
+      sendInput({
+        type: 'input-mouse',
+        action: 'click',
+        button: 'left',
+        x: coords.x,
+        y: coords.y
+      });
+    }
+    isTouchDragging = false;
+  });
+
+  // --- Keyboard Handling (Physical & Virtual) ---
   window.addEventListener('keydown', (e) => {
     if (!canControl) return;
-    if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+    if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
+      return;
+    }
 
     sendInput({
       type: 'input-key',
@@ -354,7 +466,9 @@
 
   window.addEventListener('keyup', (e) => {
     if (!canControl) return;
-    if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+    if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
+      return;
+    }
 
     sendInput({
       type: 'input-key',
@@ -363,6 +477,112 @@
       code: e.code,
       keyCode: e.keyCode
     });
+  });
+
+  // Mobile Text Send
+  function sendMobileText(text) {
+    if (!text || !canControl) return;
+    for (let char of text) {
+      sendInput({
+        type: 'input-key',
+        action: 'down',
+        key: char,
+        code: 'Key' + char.toUpperCase(),
+        keyCode: char.charCodeAt(0)
+      });
+      sendInput({
+        type: 'input-key',
+        action: 'up',
+        key: char,
+        code: 'Key' + char.toUpperCase(),
+        keyCode: char.charCodeAt(0)
+      });
+    }
+  }
+
+  mobileSendTextBtn.addEventListener('click', () => {
+    const val = mobileTextInput.value;
+    if (val) {
+      sendMobileText(val);
+      mobileTextInput.value = '';
+    }
+  });
+
+  mobileTextInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const val = mobileTextInput.value;
+      if (val) {
+        sendMobileText(val);
+        mobileTextInput.value = '';
+      }
+      sendInput({ type: 'input-key', action: 'down', key: 'Enter', code: 'Enter', keyCode: 13 });
+      sendInput({ type: 'input-key', action: 'up', key: 'Enter', code: 'Enter', keyCode: 13 });
+    }
+  });
+
+  // Key chips for mobile sheet
+  document.querySelectorAll('.key-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const keyName = btn.dataset.key;
+      let keyCode = 0;
+      if (keyName === 'Enter') keyCode = 13;
+      if (keyName === 'Backspace') keyCode = 8;
+      if (keyName === 'Tab') keyCode = 9;
+      if (keyName === 'Escape') keyCode = 27;
+
+      sendInput({ type: 'input-key', action: 'down', key: keyName, code: keyName, keyCode });
+      sendInput({ type: 'input-key', action: 'up', key: keyName, code: keyName, keyCode });
+      navigator.vibrate?.(15);
+    });
+  });
+
+  // Mobile mode buttons
+  mobileModeTapBtn.addEventListener('click', () => {
+    touchMode = 'tap';
+    mobileModeTapBtn.className = 'dock-btn active';
+    mobileModeScrollBtn.className = 'dock-btn';
+    interactionNotice.textContent = '👆 Tap mode: Touch anywhere to click';
+  });
+
+  mobileModeScrollBtn.addEventListener('click', () => {
+    touchMode = 'scroll';
+    mobileModeScrollBtn.className = 'dock-btn active';
+    mobileModeTapBtn.className = 'dock-btn';
+    interactionNotice.textContent = '📜 Scroll mode: Drag finger to scroll page';
+  });
+
+  function toggleMobileKeyboard() {
+    const isHidden = mobileInputSheet.style.display === 'none';
+    mobileInputSheet.style.display = isHidden ? 'flex' : 'none';
+    if (isHidden) {
+      mobileTextInput.focus();
+    }
+  }
+
+  mobileKeyboardBtn.addEventListener('click', toggleMobileKeyboard);
+  mobileDockKeyboardBtn.addEventListener('click', toggleMobileKeyboard);
+  closeSheetBtn.addEventListener('click', () => {
+    mobileInputSheet.style.display = 'none';
+  });
+
+  // Audio Toggle Button
+  function toggleAudio() {
+    isMuted = !isMuted;
+    remoteVideo.muted = isMuted;
+    audioIcon.textContent = isMuted ? '🔇' : '🔊';
+    audioNotice.style.display = 'none';
+    if (!isMuted) {
+      remoteVideo.play().catch(() => {});
+    }
+  }
+
+  audioToggleBtn.addEventListener('click', toggleAudio);
+  unmuteNoticeBtn.addEventListener('click', () => {
+    remoteVideo.muted = false;
+    isMuted = false;
+    audioIcon.textContent = '🔊';
+    audioNotice.style.display = 'none';
+    remoteVideo.play().catch(() => {});
   });
 
   // --- Session Cleanup ---
@@ -387,6 +607,10 @@
     modeBadge.style.display = 'none';
     disconnectBtn.style.display = 'none';
     fullscreenBtn.style.display = 'none';
+    audioToggleBtn.style.display = 'none';
+    audioNotice.style.display = 'none';
+    mobileDock.style.display = 'none';
+    mobileInputSheet.style.display = 'none';
     if (remoteVideo.srcObject) {
       remoteVideo.srcObject.getTracks().forEach(t => t.stop());
       remoteVideo.srcObject = null;

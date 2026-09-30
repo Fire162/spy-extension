@@ -27,8 +27,8 @@ async function ensureOffscreenDocument() {
 
   await chrome.offscreen.createDocument({
     url: OFFSCREEN_DOCUMENT_PATH,
-    reasons: ['USER_MEDIA', 'WEB_RTC'],
-    justification: 'Capture tab media stream and handle WebRTC peer-to-peer connection'
+    reasons: ['USER_MEDIA', 'WEB_RTC', 'AUDIO_PLAYBACK'],
+    justification: 'Capture tab media stream, preserve local audio, and handle WebRTC peer-to-peer connection'
   });
 }
 
