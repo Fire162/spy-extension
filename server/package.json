@@ -1,6 +1,6 @@
 {
   "name": "spy-extension-server",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Self-hosted signaling server and web controller client for Spy Extension",
   "main": "server.js",
   "scripts": {

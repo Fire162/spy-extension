@@ -63,43 +63,36 @@ async function detachDebugger(tabId) {
   }
 }
 
-// Dynamically query target tab viewport size
-async function getTabDimensions(tabId) {
+// Refresh cached tab dimensions on session start and window resize
+async function refreshTabDimensions(tabId) {
   try {
     const res = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
       expression: '({ w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio })',
       returnByValue: true
     });
     if (res && res.result && res.result.value) {
-      return {
-        width: res.result.value.w || 1920,
-        height: res.result.value.h || 1080,
-        dpr: res.result.value.dpr || 1
-      };
+      sessionState.tabWidth = res.result.value.w || 1920;
+      sessionState.tabHeight = res.result.value.h || 1080;
+      return;
     }
   } catch (e) {}
 
   try {
     const tab = await chrome.tabs.get(tabId);
     if (tab && tab.width && tab.height) {
-      return { width: tab.width, height: tab.height, dpr: 1 };
+      sessionState.tabWidth = tab.width;
+      sessionState.tabHeight = tab.height;
     }
   } catch (e) {}
-
-  return { width: sessionState.tabWidth || 1920, height: sessionState.tabHeight || 1080, dpr: 1 };
 }
 
-// Translate and dispatch input commands using Chrome DevTools Protocol (CDP) + DOM fallback
+// Zero-delay input dispatch using cached tab dimensions
 async function handleInputEvent(input) {
   if (!sessionState.active || !sessionState.canControl || !sessionState.tabId) return;
 
   const tabId = sessionState.tabId;
-  const dims = await getTabDimensions(tabId);
-  sessionState.tabWidth = dims.width;
-  sessionState.tabHeight = dims.height;
-
-  const targetX = Math.round(input.x * dims.width);
-  const targetY = Math.round(input.y * dims.height);
+  const targetX = Math.round(input.x * (sessionState.tabWidth || 1920));
+  const targetY = Math.round(input.y * (sessionState.tabHeight || 1080));
 
   try {
     if (input.type === 'input-mouse') {
@@ -250,8 +243,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // 2. Ensure Offscreen document exists
           await ensureOffscreenDocument();
 
-          // 3. Attach Chrome debugger for input dispatch
+          // 3. Attach Chrome debugger for input dispatch & cache dimensions
           await attachDebugger(tabId);
+          await refreshTabDimensions(tabId);
 
           // 4. Instruct offscreen document to initiate session
           chrome.runtime.sendMessage({

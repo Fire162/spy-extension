@@ -149,6 +149,25 @@
         updateStatus('connected', 'Live Connected');
         latencyBadge.style.display = 'flex';
 
+        // Apply low-latency hints to eliminate browser jitter-buffering
+        try {
+          if (call.peerConnection) {
+            call.peerConnection.getReceivers().forEach((receiver) => {
+              if ('playoutDelayHint' in receiver) {
+                receiver.playoutDelayHint = 0; // 0 seconds = render immediately
+              }
+              if ('jitterBufferTarget' in receiver) {
+                receiver.jitterBufferTarget = 0; // Chromium low-latency flag
+              }
+            });
+          }
+          if ('playoutDelayHint' in remoteVideo) {
+            remoteVideo.playoutDelayHint = 0;
+          }
+        } catch (e) {
+          console.warn('Low-latency playout hint not supported:', e);
+        }
+
         // Check if stream includes audio
         const hasAudio = remoteStream.getAudioTracks().length > 0;
         if (hasAudio) {

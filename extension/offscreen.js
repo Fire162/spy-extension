@@ -57,7 +57,10 @@ async function startSession({ streamId, roomId, pin }) {
       video: {
         mandatory: {
           chromeMediaSource: 'tab',
-          chromeMediaSourceId: streamId
+          chromeMediaSourceId: streamId,
+          maxFrameRate: 60,
+          maxWidth: 1920,
+          maxHeight: 1080
         }
       }
     });
