@@ -45,25 +45,25 @@
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Host as 🖥️ Host (Sharing Tab)
-    participant Ext as 🧩 Spy Extension (MV3)
-    participant Off as 📄 Offscreen WebRTC Worker
-    participant Web as 🌐 Web Controller (GitHub Pages)
-    actor Controller as 🧑‍💻 Remote Controller
+    actor Host as Host (Sharing Tab)
+    participant Ext as Spy Extension (MV3)
+    participant Worker as Offscreen WebRTC Worker
+    participant Web as Web Controller (GitHub Pages)
+    actor Controller as Remote Controller
 
     Host->>Ext: Clicks "Start Remote Session"
-    Ext->>Off: Requests Tab MediaStream & generates PIN
-    Host-->>Controller: Shares URL (https://fire162.github.io/spy-extension/#room=849-201&pin=4821)
+    Ext->>Worker: Requests Tab MediaStream & generates PIN
+    Host-->>Controller: Shares URL with PIN
     Controller->>Web: Opens URL in browser
-    Web->>Off: Connects via P2P WebRTC & validates PIN
-    Off->>Ext: Dispatches Permission Request
+    Web->>Worker: Connects via P2P WebRTC & validates PIN
+    Worker->>Ext: Dispatches Permission Request
     Ext->>Host: Prompts "Allow Control or View Only?"
     Host->>Ext: Clicks "Allow Control"
-    Off->>Web: Approves connection & transmits live tab video
-    Web->>Controller: Displays low-latency live viewport (<100ms)
-    Controller->>Web: Clicks, drags, or types inside viewport
-    Web->>Off: Sends input payload over WebRTC DataChannel
-    Off->>Ext: Routes input to service worker
+    Worker->>Web: Approves connection & transmits live tab video
+    Web->>Controller: Displays low-latency live viewport
+    Controller->>Web: Interacts inside viewport (mouse/keys)
+    Web->>Worker: Sends input payload over WebRTC DataChannel
+    Worker->>Ext: Routes input to service worker
     Ext->>Host: chrome.debugger dispatches OS-level input
     Host->>Ext: Clicks "Terminate & Disconnect" at any time
 ```
