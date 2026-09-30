@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Spy Extension - Remote Browser Controller</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="theme-dark">
+  <div class="app-container">
+    <!-- Top Navigation Bar -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="brand">
+          <div class="brand-radar"></div>
+          <span class="brand-title">SPY<span class="highlight">CONTROL</span></span>
+        </div>
+        <div class="session-badge" id="sessionBadge" style="display: none;">
+          <span class="badge-label">ROOM:</span>
+          <span class="badge-value" id="currentRoomText">---</span>
+        </div>
+      </div>
+
+      <div class="header-center">
+        <div class="connection-status" id="statusIndicator">
+          <span class="status-dot"></span>
+          <span class="status-text" id="statusText">Disconnected</span>
+        </div>
+        <div class="latency-badge" id="latencyBadge" style="display: none;">
+          <span class="latency-icon">⚡</span>
+          <span id="latencyText">-- ms</span>
+        </div>
+        <div class="mode-badge" id="modeBadge" style="display: none;">
+          <span id="modeText">VIEW ONLY</span>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <button id="fullscreenBtn" class="btn btn-icon" title="Toggle Fullscreen" style="display: none;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+          </svg>
+        </button>
+        <button id="disconnectBtn" class="btn btn-danger" style="display: none;">
+          Disconnect
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="viewport-area" id="viewportArea">
+      <!-- Remote Stream Video -->
+      <div class="stream-wrapper" id="streamWrapper">
+        <video id="remoteVideo" autoplay playsinline></video>
+        <div class="cursor-pointer" id="remoteCursor" style="display: none;"></div>
+      </div>
+
+      <!-- Initial Join Modal -->
+      <div class="modal-overlay" id="joinModal">
+        <div class="modal-card">
+          <div class="modal-header">
+            <div class="modal-icon">🔒</div>
+            <h2>Remote Browser Access</h2>
+            <p>Enter the Room ID and 4-digit PIN provided by the browser host.</p>
+          </div>
+          <form id="joinForm" class="modal-form">
+            <div class="form-group">
+              <label for="roomIdInput">ROOM ID</label>
+              <input type="text" id="roomIdInput" placeholder="e.g. SPY-4821" required autocomplete="off" spellcheck="false">
+            </div>
+            <div class="form-group">
+              <label for="pinInput">SECURITY PIN</label>
+              <input type="password" id="pinInput" maxlength="6" placeholder="4 to 6 digit PIN" required autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label for="serverWsInput">SIGNALING SERVER</label>
+              <input type="text" id="serverWsInput" value="" placeholder="Auto (Current Host)" autocomplete="off">
+            </div>
+            <div class="form-actions">
+              <button type="submit" id="joinBtn" class="btn btn-primary btn-block">
+                Request Access
+              </button>
+            </div>
+            <div class="error-msg" id="joinErrorMsg"></div>
+          </form>
+          <div class="modal-footer">
+            <span>🛡️ End-to-End P2P WebRTC. Mutual two-party consent required.</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Waiting for Host Approval Overlay -->
+      <div class="modal-overlay" id="waitingModal" style="display: none;">
+        <div class="modal-card modal-waiting">
+          <div class="spinner"></div>
+          <h3>Waiting for Host Approval</h3>
+          <p>The host browser has been prompted to grant remote access. Please wait for their confirmation.</p>
+          <button id="cancelJoinBtn" class="btn btn-outline">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Disconnected Banner -->
+      <div class="overlay-notice" id="disconnectNotice" style="display: none;">
+        <div class="notice-card">
+          <h3>Session Ended</h3>
+          <p id="disconnectReason">The host has closed the connection.</p>
+          <button id="reconnectBtn" class="btn btn-primary">Connect Another Session</button>
+        </div>
+      </div>
+    </main>
+
+    <!-- Bottom Status Bar -->
+    <footer class="app-footer">
+      <div class="footer-left">
+        <span class="info-tag">METHOD: WebRTC DataChannel + CDP</span>
+      </div>
+      <div class="footer-center">
+        <span id="interactionNotice">Hold Click & Drag or Type to interact once control is active</span>
+      </div>
+      <div class="footer-right">
+        <span class="info-tag">SPY EXTENSION v1.0.0</span>
+      </div>
+    </footer>
+  </div>
+
+  <script src="controller.js"></script>
+</body>
+</html>

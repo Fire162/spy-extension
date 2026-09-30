@@ -1,0 +1,20 @@
+{
+  "name": "spy-extension-server",
+  "version": "1.0.0",
+  "description": "Self-hosted signaling server and web controller client for Spy Extension",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "keywords": [
+    "webrtc",
+    "signaling",
+    "remote-control",
+    "browser-extension"
+  ],
+  "author": "Fire162",
+  "license": "MIT"
+}
