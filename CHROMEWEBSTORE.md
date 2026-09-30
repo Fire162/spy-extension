@@ -70,6 +70,7 @@ English
 | `storage` | permissions | Saves user preferences such as default control permissions and signaling settings across browser sessions. |
 | `tabs` | permissions | Retrieves current tab dimensions and titles to properly calibrate remote cursor coordinates to the host's viewport. |
 | `activeTab` | permissions | Allows host to target and initiate streaming on the currently focused browser tab upon clicking the extension action icon. |
+| `scripting` | permissions | Injects the interactive on-screen snipping tool overlay into the host tab to let the host drag and select custom screen regions for View-Only viewers. |
 
 ## Privacy & Data Use
 
@@ -112,7 +113,8 @@ https://fire162.github.io/spy-extension/
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
-| 1.4.0 | 2026-09-30 | View-only screen portion/crop sharing (live offscreen canvas capture stream with region presets and dynamic replaceTrack), real-time guest inactivity/disconnection tracking on host screen, and complete host tab closure session lockdown preventing frozen screens or orphaned text dispatch | Current |
+| 1.5.0 | 2026-09-30 | Interactive On-Screen Snipping Tool (Windows Snipping Tool / macOS screen capture style) with live drag-and-crop, glowing marquee box, infinite scrim cutout, resize handles, floating action bar, and keyboard shortcuts (Enter/Esc) for View-Only guest stream customization; plus interactive popup track drag-and-draw and connection resilience against transient NotOpenYet PeerJS race conditions | Current |
+| 1.4.0 | 2026-09-30 | View-only screen portion/crop sharing (live offscreen canvas capture stream with region presets and dynamic replaceTrack), real-time guest inactivity/disconnection tracking on host screen, and complete host tab closure session lockdown preventing frozen screens or orphaned text dispatch | Archived |
 | 1.3.1 | 2026-09-30 | Fix pending request card dismissal upon clicking Allow/Deny, prevent double submissions with disabled button states, animated exit transitions, background badge & notification auto-clear, and active roster reconciliation | Archived |
 | 1.3.0 | 2026-09-30 | Multi-peer WebRTC 1-to-many streaming pool (supports multiple devices simultaneously), incoming requests queue with device detection (Mobile/Desktop), active connected devices roster with dynamic role toggling & kick controls, and persistent past & expired session history log | Archived |
 | 1.2.0 | 2026-09-30 | Remote navigation toolbar (Back/Forward/Reload/URL bar), instant QR code pairing in extension popup, 2-finger mobile pinch-to-zoom & pan, host live laser pointer, 8 Mbps Ultra-HD WebRTC bitrate boost, and mobile clipboard paste | Archived |

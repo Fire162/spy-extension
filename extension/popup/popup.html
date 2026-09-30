@@ -53,6 +53,9 @@
           </div>
           <span class="setting-desc">Share only a selected screen portion with View-Only guests.</span>
           <div id="portionControls" class="portion-controls" style="display: none;">
+            <button type="button" id="snipScreenBtn" class="btn btn-snip btn-sm btn-block">
+              ✂️ Drag & Select on Screen (Snipping Tool)
+            </button>
             <div class="portion-row">
               <label for="portionPresetSelect">Preset Region:</label>
               <select id="portionPresetSelect" class="select-sm">
@@ -69,7 +72,7 @@
               <label>W% <input type="number" id="portionW" min="10" max="100" value="100"></label>
               <label>H% <input type="number" id="portionH" min="10" max="100" value="50"></label>
             </div>
-            <div class="portion-preview-track">
+            <div class="portion-preview-track" id="portionPreviewTrack" title="Drag inside box to adjust selection">
               <div id="portionPreviewBox" class="portion-preview-rect"></div>
             </div>
           </div>
@@ -134,6 +137,14 @@
             </label>
           </div>
           <span class="setting-desc">Toggles live cropped stream for View-Only viewers.</span>
+          <div id="activePortionDetails" class="active-portion-details" style="display: none;">
+            <div class="active-portion-row">
+              <span class="active-portion-tag" id="activePortionTag">Area: 100% × 50%</span>
+              <button type="button" id="activeSnipScreenBtn" class="btn btn-snip btn-xs">
+                ✂️ Resnip on Screen
+              </button>
+            </div>
+          </div>
         </div>
 
         <!-- Section: Pending Connection Requests Queue -->

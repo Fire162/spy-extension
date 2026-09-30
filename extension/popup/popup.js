@@ -33,7 +33,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const portionW = document.getElementById('portionW');
   const portionH = document.getElementById('portionH');
   const portionPreviewBox = document.getElementById('portionPreviewBox');
+  const portionPreviewTrack = document.getElementById('portionPreviewTrack');
+  const snipScreenBtn = document.getElementById('snipScreenBtn');
   const activePortionToggle = document.getElementById('activePortionToggle');
+  const activePortionDetails = document.getElementById('activePortionDetails');
+  const activePortionTag = document.getElementById('activePortionTag');
+  const activeSnipScreenBtn = document.getElementById('activeSnipScreenBtn');
 
   // Room Details & QR
   const sessionTimer = document.getElementById('sessionTimer');
@@ -121,6 +126,90 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (portionW && settings.width !== undefined) portionW.value = settings.width;
     if (portionH && settings.height !== undefined) portionH.value = settings.height;
     updatePortionPreview();
+
+    if (activePortionDetails && activePortionTag) {
+      if (settings.enabled) {
+        activePortionDetails.style.display = 'block';
+        const presetLabel = settings.preset === 'custom' ? 'Custom Snip' : (settings.preset || 'Portion');
+        activePortionTag.textContent = `${presetLabel} (${settings.width || 100}% × ${settings.height || 50}%)`;
+      } else {
+        activePortionDetails.style.display = 'none';
+      }
+    }
+  }
+
+  function triggerOnScreenSnip() {
+    chrome.runtime.sendMessage({ type: 'GET_SESSION_STATE' }, (state) => {
+      const targetTabId = (state && state.active && state.tabId) ? state.tabId : (currentTab ? currentTab.id : null);
+      if (targetTabId) {
+        chrome.runtime.sendMessage({
+          type: 'START_SCREEN_SELECTION',
+          payload: { tabId: targetTabId }
+        });
+        window.close(); // Close popup so host can view and snip full screen
+      }
+    });
+  }
+
+  if (snipScreenBtn) {
+    snipScreenBtn.addEventListener('click', triggerOnScreenSnip);
+  }
+
+  if (activeSnipScreenBtn) {
+    activeSnipScreenBtn.addEventListener('click', triggerOnScreenSnip);
+  }
+
+  // Interactive drag-and-draw inside popup preview track
+  if (portionPreviewTrack) {
+    let isTrackDragging = false;
+    let trackStartX = 0, trackStartY = 0;
+
+    portionPreviewTrack.addEventListener('mousedown', (e) => {
+      isTrackDragging = true;
+      const rect = portionPreviewTrack.getBoundingClientRect();
+      trackStartX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+      trackStartY = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+
+      const pctX = Math.round((trackStartX / rect.width) * 100);
+      const pctY = Math.round((trackStartY / rect.height) * 100);
+      portionX.value = pctX;
+      portionY.value = pctY;
+      portionW.value = 10;
+      portionH.value = 10;
+      if (portionPresetSelect) portionPresetSelect.value = 'custom';
+      updatePortionPreview();
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isTrackDragging) return;
+      const rect = portionPreviewTrack.getBoundingClientRect();
+      const curX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+      const curY = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+
+      const minX = Math.min(trackStartX, curX);
+      const minY = Math.min(trackStartY, curY);
+      const w = Math.abs(curX - trackStartX);
+      const h = Math.abs(curY - trackStartY);
+
+      const pctX = Math.round((minX / rect.width) * 100);
+      const pctY = Math.round((minY / rect.height) * 100);
+      const pctW = Math.max(10, Math.min(100 - pctX, Math.round((w / rect.width) * 100)));
+      const pctH = Math.max(10, Math.min(100 - pctY, Math.round((h / rect.height) * 100)));
+
+      portionX.value = pctX;
+      portionY.value = pctY;
+      portionW.value = pctW;
+      portionH.value = pctH;
+      if (portionPresetSelect) portionPresetSelect.value = 'custom';
+      updatePortionPreview();
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (isTrackDragging) {
+        isTrackDragging = false;
+        sendPortionUpdate();
+      }
+    });
   }
 
   function sendPortionUpdate() {
@@ -187,7 +276,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 2. Load History Count
   loadHistoryCount();
 
-  // 3. Check current session state from background service worker
+  // 3. Load persisted default portion settings if configured
+  chrome.storage.local.get(['defaultPortionSettings'], (res) => {
+    if (res && res.defaultPortionSettings) {
+      applyPortionSettings(res.defaultPortionSettings);
+    }
+  });
+
+  // 4. Check current session state from background service worker
   chrome.runtime.sendMessage({ type: 'GET_SESSION_STATE' }, (state) => {
     if (chrome.runtime.lastError || !state) return;
     renderState(state);

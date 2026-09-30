@@ -562,11 +562,62 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'UPDATE_PORTION_SETTINGS': {
       sessionState.portionSettings = { ...sessionState.portionSettings, ...message.payload };
+      chrome.storage.local.set({ defaultPortionSettings: sessionState.portionSettings }).catch(() => {});
+      if (sessionState.active) {
+        chrome.runtime.sendMessage({
+          target: 'offscreen',
+          type: 'UPDATE_PORTION_SETTINGS',
+          payload: sessionState.portionSettings
+        });
+      }
       chrome.runtime.sendMessage({
-        target: 'offscreen',
-        type: 'UPDATE_PORTION_SETTINGS',
-        payload: sessionState.portionSettings
-      });
+        type: 'PORTION_SETTINGS_UPDATED',
+        portionSettings: sessionState.portionSettings
+      }).catch(() => {});
+      sendResponse({ success: true });
+      return true;
+    }
+
+    case 'START_SCREEN_SELECTION': {
+      (async () => {
+        try {
+          let targetTabId = message.payload?.tabId || sessionState.tabId;
+          if (!targetTabId) {
+            const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            targetTabId = activeTab?.id;
+          }
+          if (targetTabId) {
+            await chrome.scripting.executeScript({
+              target: { tabId: targetTabId },
+              files: ['snipper.js']
+            });
+            sendResponse({ success: true });
+          } else {
+            sendResponse({ success: false, error: 'No active tab found' });
+          }
+        } catch (err) {
+          console.error('Failed to inject snipper.js:', err);
+          sendResponse({ success: false, error: err.message });
+        }
+      })();
+      return true;
+    }
+
+    case 'APPLY_SCREEN_PORTION': {
+      sessionState.portionSettings = {
+        ...sessionState.portionSettings,
+        ...message.payload,
+        enabled: true,
+        preset: 'custom'
+      };
+      chrome.storage.local.set({ defaultPortionSettings: sessionState.portionSettings }).catch(() => {});
+      if (sessionState.active) {
+        chrome.runtime.sendMessage({
+          target: 'offscreen',
+          type: 'UPDATE_PORTION_SETTINGS',
+          payload: sessionState.portionSettings
+        });
+      }
       chrome.runtime.sendMessage({
         type: 'PORTION_SETTINGS_UPDATED',
         portionSettings: sessionState.portionSettings
