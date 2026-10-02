@@ -27,7 +27,7 @@
 
 ## 💡 What is Spy Extension?
 
-**Spy Extension** allows you to give remote viewing and control of your browser tab to someone else—without installing third-party remote desktop software (like TeamViewer or AnyDesk) and **without the other person needing any extension or software at all**.
+**Spy Extension** lets you share remote viewing and control of your browser tab without installing third-party software like TeamViewer or AnyDesk. The other person does not need any extension or software at all.
 
 ### 🌟 Key Features
 
