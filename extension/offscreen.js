@@ -11,10 +11,14 @@ let currentRoomId = null;
 let currentPin = null;
 
 // Multi-client pools
-// connectedClients: clientId (peerId) -> { conn, call, canControl, deviceInfo, connectedAt }
+// connectedClients: clientId (peerId) -> { conn, call, canControl, deviceInfo, sessionToken, connectedAt }
 const connectedClients = new Map();
 // pendingClients: clientId (peerId) -> { conn, deviceInfo }
 const pendingClients = new Map();
+// Active approved session tokens for auto-reconnection: token -> { canControl, deviceInfo, issuedAt }
+const approvedSessions = new Map();
+// Grace period timers for temporary network/ICE disconnects: clientId -> timer
+const disconnectTimers = new Map();
 
 function sanitizePeerId(raw) {
   return 'spy-' + raw.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -31,6 +35,18 @@ function notifyClientListUpdate() {
     type: 'CLIENTS_UPDATED',
     clients
   });
+
+  // Broadcast live session count to all connected viewers
+  for (const [_, client] of connectedClients) {
+    try {
+      if (client.conn && client.conn.open) {
+        client.conn.send({
+          type: 'session-stats',
+          activeClientsCount: connectedClients.size
+        });
+      }
+    } catch (e) {}
+  }
 }
 
 // Portion Cropping Settings for View-Only privacy sharing
@@ -57,15 +73,48 @@ function updatePortionSettings(settings) {
 
 function setupPeerConnectionListeners(clientId, pc) {
   if (!pc) return;
+
+  const handleTransientDisconnect = (source) => {
+    console.log(`Peer connection ${source} disconnected for ${clientId}. Starting 15s reconnect grace period.`);
+    if (!disconnectTimers.has(clientId)) {
+      disconnectTimers.set(clientId, setTimeout(() => {
+        disconnectTimers.delete(clientId);
+        if (connectedClients.has(clientId)) {
+          console.warn(`Reconnection grace period expired for ${clientId}`);
+          removeClient(clientId, `${source} timed out`);
+        }
+      }, 15000));
+    }
+  };
+
+  const handleActive = () => {
+    if (disconnectTimers.has(clientId)) {
+      console.log(`Connection recovered for ${clientId}, clearing grace period timer.`);
+      clearTimeout(disconnectTimers.get(clientId));
+      disconnectTimers.delete(clientId);
+    }
+  };
+
   pc.addEventListener('connectionstatechange', () => {
     console.log(`PeerConnection state for ${clientId}:`, pc.connectionState);
-    if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+    if (pc.connectionState === 'connected') {
+      handleActive();
+    } else if (pc.connectionState === 'disconnected') {
+      handleTransientDisconnect('WebRTC');
+    } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      handleActive();
       removeClient(clientId, `WebRTC ${pc.connectionState}`);
     }
   });
+
   pc.addEventListener('iceconnectionstatechange', () => {
     console.log(`ICE state for ${clientId}:`, pc.iceConnectionState);
-    if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
+    if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      handleActive();
+    } else if (pc.iceConnectionState === 'disconnected') {
+      handleTransientDisconnect('Network');
+    } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
+      handleActive();
       removeClient(clientId, `Network ${pc.iceConnectionState}`);
     }
   });
@@ -221,6 +270,51 @@ async function startSession({ streamId, roomId, pin, portionSettings: initialPor
         // PIN verified! Add to pending clients pool
         const clientId = conn.peer;
         const deviceInfo = data.deviceInfo || 'Remote Device';
+
+        // Check for Session Resumption (Auto-reconnect without prompting host)
+        if (data.sessionToken && approvedSessions.has(data.sessionToken)) {
+          const session = approvedSessions.get(data.sessionToken);
+          console.log(`Auto-resuming session for approved client: ${session.deviceInfo} (${clientId})`);
+
+          if (disconnectTimers.has(clientId)) {
+            clearTimeout(disconnectTimers.get(clientId));
+            disconnectTimers.delete(clientId);
+          }
+
+          const isPortion = !session.canControl && portionSettings.enabled;
+          conn.send({
+            type: 'permission-result',
+            approved: true,
+            sessionToken: data.sessionToken,
+            canControl: !!session.canControl,
+            portionEnabled: isPortion,
+            portion: isPortion ? portionSettings : null,
+            resumed: true
+          });
+
+          let call = null;
+          if (mediaStream && peer) {
+            console.log('Re-initiating WebRTC media call for auto-resumed client:', clientId);
+            call = peer.call(clientId, mediaStream);
+            if (call && call.peerConnection) {
+              tuneBitrate(call.peerConnection);
+              setupPeerConnectionListeners(clientId, call.peerConnection);
+            }
+          }
+
+          connectedClients.set(clientId, {
+            conn,
+            call,
+            canControl: !!session.canControl,
+            deviceInfo: session.deviceInfo,
+            sessionToken: data.sessionToken,
+            connectedAt: Date.now()
+          });
+
+          notifyClientListUpdate();
+          return;
+        }
+
         pendingClients.set(clientId, { conn, deviceInfo });
 
         console.log(`PIN verified for ${deviceInfo} (${clientId}). Awaiting host approval...`);
@@ -289,6 +383,12 @@ async function handlePermissionDecision({ clientId, approved, canControl }) {
 
   if (approved) {
     const isPortion = !canControl && portionSettings.enabled;
+    const sessionToken = 'spy_' + Math.random().toString(36).substring(2, 12) + '_' + Date.now().toString(36);
+    approvedSessions.set(sessionToken, {
+      canControl: !!canControl,
+      deviceInfo,
+      issuedAt: Date.now()
+    });
 
     console.log(`Host granted access to ${deviceInfo} (${clientId}). canControl: ${canControl}, isPortion: ${isPortion}`);
     if (conn && conn.open) {
@@ -296,6 +396,7 @@ async function handlePermissionDecision({ clientId, approved, canControl }) {
         conn.send({
           type: 'permission-result',
           approved: true,
+          sessionToken,
           canControl: !!canControl,
           portionEnabled: isPortion,
           portion: isPortion ? portionSettings : null
@@ -382,6 +483,10 @@ function kickClient({ clientId }) {
 }
 
 function removeClient(clientId, reason) {
+  if (disconnectTimers.has(clientId)) {
+    clearTimeout(disconnectTimers.get(clientId));
+    disconnectTimers.delete(clientId);
+  }
   let devInfo = 'Remote Device';
   if (pendingClients.has(clientId)) {
     devInfo = pendingClients.get(clientId).deviceInfo || devInfo;
@@ -468,6 +573,12 @@ function stopSession(reason = 'Host ended session') {
     } catch (e) {}
   }
   pendingClients.clear();
+
+  for (const [_, timer] of disconnectTimers) {
+    clearTimeout(timer);
+  }
+  disconnectTimers.clear();
+  approvedSessions.clear();
 
   if (peer) {
     try { peer.destroy(); } catch (e) {}

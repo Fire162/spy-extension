@@ -728,6 +728,63 @@ body {
   border-color: #fbbf24;
 }
 
+/* Reconnection Banner */
+.reconnect-banner {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(245, 158, 11, 0.6);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6), 0 0 12px rgba(245, 158, 11, 0.3);
+  color: #fef3c7;
+  padding: 8px 18px;
+  border-radius: 9999px;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 100;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+.reconnect-pulse {
+  animation: pulse 1.5s infinite ease-in-out;
+  font-size: 14px;
+}
+
+/* Top-Right Floating Session Badge on Stream */
+.top-right-session-badge {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  color: #f8fafc;
+  padding: 6px 12px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 20;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 10px rgba(16, 185, 129, 0.2);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  user-select: none;
+}
+
+.top-right-session-badge .session-dot {
+  font-size: 13px;
+  line-height: 1;
+  filter: drop-shadow(0 0 4px rgba(16, 185, 129, 0.6));
+  animation: pulse 2s infinite ease-in-out;
+}
+
 /* Responsive Media Queries */
 @media (max-width: 768px) {
   .app-header {
