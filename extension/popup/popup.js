@@ -85,6 +85,74 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadHistory();
   });
 
+  // ICE / TURN relay settings
+  const iceSettingsHeader = document.getElementById('iceSettingsHeader');
+  const iceSettingsBody = document.getElementById('iceSettingsBody');
+  const iceServersInput = document.getElementById('iceServersInput');
+  const saveIceBtn = document.getElementById('saveIceBtn');
+  const clearIceBtn = document.getElementById('clearIceBtn');
+  const iceStatus = document.getElementById('iceStatus');
+
+  const formatIceServers = (servers) => (servers || []).map(sv =>
+    [sv.urls, sv.username || '', sv.credential || ''].filter((v, i) => i === 0 || v).join('|')
+  ).join('\n');
+
+  const parseIceServers = (text) => text
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'))
+    .map(line => {
+      const [urls, username, credential] = line.split('|').map(p => (p || '').trim());
+      if (!urls || !/^(stun|turn|turns):/i.test(urls)) return null;
+      return { urls, ...(username ? { username } : {}), ...(credential ? { credential } : {}) };
+    })
+    .filter(Boolean);
+
+  function showIceStatus(text, isError) {
+    if (!iceStatus) return;
+    iceStatus.textContent = text;
+    iceStatus.style.color = isError ? 'var(--danger, #ef4444)' : 'var(--success, #10b981)';
+    setTimeout(() => { if (iceStatus) iceStatus.textContent = ''; }, 3000);
+  }
+
+  if (iceSettingsHeader && iceSettingsBody) {
+    iceSettingsHeader.addEventListener('click', () => {
+      const isHidden = iceSettingsBody.style.display === 'none';
+      iceSettingsBody.style.display = isHidden ? 'flex' : 'none';
+      iceSettingsHeader.querySelector('.arrow').textContent = isHidden ? '▴' : '▾';
+    });
+  }
+
+  if (saveIceBtn) {
+    saveIceBtn.addEventListener('click', () => {
+      const raw = iceServersInput ? iceServersInput.value : '';
+      if (raw.trim() === '') {
+        chrome.storage.local.remove('iceServers');
+        chrome.runtime.sendMessage({ target: 'offscreen', type: 'UPDATE_ICE_SERVERS', payload: [] }).catch(() => {});
+        showIceStatus('Reset to public STUN');
+        return;
+      }
+      const servers = parseIceServers(raw);
+      if (servers.length === 0) {
+        showIceStatus('No valid stun:/turn: entries found', true);
+        return;
+      }
+      chrome.storage.local.set({ iceServers: servers });
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'UPDATE_ICE_SERVERS', payload: servers }).catch(() => {});
+      if (iceServersInput) iceServersInput.value = formatIceServers(servers);
+      showIceStatus(`Saved ${servers.length} server${servers.length === 1 ? '' : 's'}`);
+    });
+  }
+
+  if (clearIceBtn) {
+    clearIceBtn.addEventListener('click', () => {
+      if (iceServersInput) iceServersInput.value = '';
+      chrome.storage.local.remove('iceServers');
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'UPDATE_ICE_SERVERS', payload: [] }).catch(() => {});
+      showIceStatus('Reset to public STUN');
+    });
+  }
+
   // Toggle server settings accordion
   serverSettingsHeader.addEventListener('click', () => {
     const isHidden = serverSettingsBody.style.display === 'none';
@@ -348,6 +416,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 2. Load History Count
   loadHistoryCount();
+
+  // 3b. Restore saved ICE/TURN relay configuration
+  chrome.storage.local.get(['iceServers'], (res) => {
+    if (res && Array.isArray(res.iceServers) && res.iceServers.length > 0 && iceServersInput) {
+      iceServersInput.value = formatIceServers(res.iceServers);
+    }
+  });
 
   // 3. Load persisted default portion settings & permission preference
   chrome.storage.local.get(['defaultPortionSettings', 'defaultCanControl'], (res) => {
