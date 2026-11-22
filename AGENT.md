@@ -48,16 +48,18 @@ spy-extension/
 ## 3. Core Subsystems
 
 ### A. Background Service Worker (`extension/background.js`)
-* **Chrome DevTools Protocol (CDP)**: Attaches `chrome.debugger` to the active shared tab to dispatch genuine OS-level mouse events (`mousePressed`, `mouseReleased`, `mouseMoved`, `mouseWheel`) and keyboard events (`rawKeyDown`, `keyUp`, `char`).
+* **Chrome DevTools Protocol (CDP)**: Attaches `chrome.debugger` to the active shared tab to dispatch genuine OS-level mouse events (`mousePressed`, `mouseReleased`, `mouseMoved`, `mouseWheel`) and keyboard events (`keyDown`, `keyUp`). Forwards modifier bitmasks (`altKey`, `ctrlKey`, `metaKey`, `shiftKey`) and tracks proximity/timestamps to compute dynamic `clickCount` for native double/triple-click selections.
+* **Keepalive Connection**: Holds an active `runtime.connect` port with the offscreen document to prevent Manifest V3 service worker termination (~30s idle kill), ensuring continuous remote control dispatching throughout active sessions.
 * **Tab Capture**: Calls `chrome.tabCapture.getMediaStreamId({ targetTabId })` to obtain the stream ID and passes it to the offscreen document.
 * **Overlay Injection**: Injects `overlay.js` via `chrome.scripting.executeScript` to display the floating `🟢 N Sessions` indicator on the host tab, synchronizing client counts on updates and removing it on session termination.
 * **Session Lifecycle**: Monitors `chrome.tabs.onRemoved`, `chrome.debugger.onDetach`, and window bounds updates to safeguard tab state and prevent orphan sessions.
 
 ### B. Offscreen Document (`extension/offscreen.js`)
 * **Manifest V3 Sandbox Bridge**: WebRTC peer-to-peer connections and `navigator.mediaDevices.getUserMedia` cannot run in Service Workers; they run inside `offscreen.html`.
-* **Multi-Peer Host**: Listens for incoming controller connections using PeerJS (`spy-<roomId>`).
-* **Session Resumption & Grace Period**:
+* **Multi-Peer Host & TURN Relay**: Listens for incoming controller connections using PeerJS (`spy-<roomId>`). Supports configurable STUN/TURN ICE servers via extension popup settings for symmetric NAT / cellular network traversal.
+* **Session Resumption & Security**:
   * Grants a cryptographically random `sessionToken` upon approval. Reconnecting clients presenting a valid token and PIN auto-resume without re-prompting the host.
+  * Properly revokes session tokens upon host kicking a client, and persists role changes (Control vs View-Only).
   * Employs a 15-second grace timer for transient ICE/WebRTC `disconnected` states instead of terminating sessions abruptly.
 * **Local Audio Loopback**: Renders captured tab audio back to host speakers using `AudioContext` so the host tab audio remains audible locally while streaming.
 * **Bitrate Tuning**: Configures video senders to 8 Mbps Ultra-HD with `degradationPreference: 'maintain-resolution'`.
@@ -67,9 +69,20 @@ spy-extension/
 * **Connection Lifecycle**: Features exponential backoff auto-retry (`attemptAutoReconnect`) and `visibilitychange` detection to recover live streams instantly when mobile users switch between apps.
 * **Interaction Engine**: Supports desktop mouse/keyboard, mobile single-finger drag/tap, two-finger pinch-to-zoom/pan, and virtual keyboard input sheets.
 
+### D. Signaling Server (`server/server.js`)
+* **Multi-Controller Rooms**: Manages active rooms with a `controllers: Map<clientId, ws>` roster, routing signals directly to targeted peers without crosstalk.
+* **Hardened Security**: Enforces PIN attempt rate limiting (max 8 attempts per 60 seconds per socket), static path normalization to prevent directory traversal, and WebSocket payload limits.
+
 ---
 
 ## 4. Development & Testing Commands
+
+### Automated Test Suite
+```bash
+# Run multi-controller signaling server integration tests
+cd server
+npm test
+```
 
 ### Syntax & Lint Verification
 ```bash
