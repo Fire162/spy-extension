@@ -201,9 +201,15 @@
       if (clients.length === 0) {
         rosterList.innerHTML = '<div style="color:#64748b;font-style:italic;">Waiting for guests...</div>';
       } else {
+        // deviceInfo is attacker-controlled (client sends it in the auth
+        // payload), so it must be escaped before touching innerHTML -
+        // otherwise a crafted UA string executes script in the host page.
+        const esc = (str) => String(str).replace(/[&<>"']/g, ch => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[ch]));
         rosterList.innerHTML = clients.map(c => `
           <div class="roster-item">
-            <span class="roster-device" title="${c.deviceInfo || 'Remote Device'}">${c.deviceInfo || 'Remote Device'}</span>
+            <span class="roster-device" title="${esc(c.deviceInfo || 'Remote Device')}">${esc(c.deviceInfo || 'Remote Device')}</span>
             <span class="roster-role">${c.canControl ? 'Control' : 'View'}</span>
           </div>
         `).join('');

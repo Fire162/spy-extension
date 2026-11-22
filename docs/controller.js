@@ -131,7 +131,9 @@
   let lastPinchMidY = 0;
 
   function sanitizePeerId(raw) {
-    return 'spy-' + raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+    // Must stay in sync with extension/offscreen.js — keep word boundaries so
+    // "SPY-4821" and "SPY4821" never resolve to the same PeerJS ID.
+    return 'spy-' + String(raw).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   }
 
   // Parse room and pin from URL
