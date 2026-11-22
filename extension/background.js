@@ -16,6 +16,7 @@ let sessionState = {
   pin: null,
   serverUrl: null,
   startTime: null,
+  defaultCanControl: true,
   tabTitle: '',
   tabUrl: '',
   pendingRequests: [], // array of { clientId, deviceInfo, timestamp }
@@ -30,6 +31,31 @@ let sessionState = {
     height: 50
   }
 };
+
+// Keep the MV3 service worker alive while a session is active.
+// Without this, Chrome can terminate the worker after ~30s of idle and
+// the offscreen document's EXECUTE_INPUT messages are silently lost.
+// Holding an open message channel is the documented keepalive pattern.
+let keepAlivePort = null;
+
+function startKeepAlive() {
+  if (keepAlivePort) return;
+  try {
+    keepAlivePort = chrome.runtime.connect({ name: 'spy-keepalive' });
+    keepAlivePort.onDisconnect.addListener(() => {
+      keepAlivePort = null;
+      // Reconnect if the session is still meant to be active
+      if (sessionState.active) setTimeout(startKeepAlive, 1000);
+    });
+  } catch (e) {}
+}
+
+function stopKeepAlive() {
+  if (keepAlivePort) {
+    try { keepAlivePort.disconnect(); } catch (e) {}
+    keepAlivePort = null;
+  }
+}
 
 // Check and maintain offscreen document
 async function ensureOffscreenDocument() {
@@ -61,6 +87,21 @@ async function attachDebugger(tabId) {
     await chrome.debugger.attach({ tabId }, '1.3');
     console.log(`Debugger attached to tab ${tabId}`);
   } catch (err) {
+    // A previous worker instance may have crashed while attached and left
+    // the tab in a "debugger already attached" state. Detach and retry once.
+    const msg = String((err && err.message) || err || '');
+    if (msg.toLowerCase().includes('already attached')) {
+      try {
+        await chrome.debugger.detach({ tabId });
+        await new Promise(r => setTimeout(r, 250));
+        await chrome.debugger.attach({ tabId }, '1.3');
+        console.log(`Debugger re-attached to tab ${tabId}`);
+        return;
+      } catch (retryErr) {
+        console.error('Failed to re-attach debugger:', retryErr);
+        throw retryErr;
+      }
+    }
     console.error('Failed to attach debugger:', err);
     throw err;
   }
@@ -145,6 +186,25 @@ function updateTabOverlay() {
   }
 }
 
+// Persist the minimal session descriptor so that if Chrome restarts the
+// service worker mid-session, we can recover state and tear down cleanly
+// instead of leaving a ghost session (WAIT badge, live stream, dead input).
+async function persistSession() {
+  try {
+    await chrome.storage.session.set({
+      activeSession: sessionState.active ? {
+        tabId: sessionState.tabId,
+        roomId: sessionState.roomId,
+        pin: sessionState.pin,
+        tabTitle: sessionState.tabTitle,
+        tabUrl: sessionState.tabUrl,
+        startTime: sessionState.startTime,
+        defaultCanControl: sessionState.defaultCanControl
+      } : null
+    });
+  } catch (e) {}
+}
+
 // Save completed or terminated session into persistent history
 async function saveSessionToHistory(session, status = 'completed') {
   if (!session.startTime || !session.roomId) return;
@@ -170,6 +230,21 @@ async function saveSessionToHistory(session, status = 'completed') {
   } catch (err) {
     console.warn('Failed to save session to history:', err);
   }
+}
+
+// Track successive presses so Chrome can synthesize dblclick/trplclick
+// natively (dblclick requires clickCount:2 — previously every press was 1,
+// so double-click-to-select-word / open-folder never worked on the host).
+const clickTracker = { at: 0, x: 0, y: 0, count: 1 };
+
+function nextClickCount(x, y) {
+  const now = Date.now();
+  const near = Math.abs(x - clickTracker.x) <= 6 && Math.abs(y - clickTracker.y) <= 6;
+  clickTracker.count = (now - clickTracker.at < 500 && near) ? Math.min(clickTracker.count + 1, 3) : 1;
+  clickTracker.at = now;
+  clickTracker.x = x;
+  clickTracker.y = y;
+  return clickTracker.count;
 }
 
 // Zero-delay input dispatch using cached tab dimensions
@@ -225,13 +300,14 @@ async function handleInputEvent(input) {
           y: targetY
         });
 
+        const clickCount = nextClickCount(targetX, targetY);
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
           type: 'mousePressed',
           x: targetX,
           y: targetY,
           button: button,
           buttons: buttonsBit,
-          clickCount: 1
+          clickCount
         });
 
         if (input.action === 'click') {
@@ -241,25 +317,8 @@ async function handleInputEvent(input) {
             y: targetY,
             button: button,
             buttons: 0,
-            clickCount: 1
+            clickCount
           });
-
-          // Dual-layer DOM click trigger
-          try {
-            await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
-              expression: `
-                (() => {
-                  const el = document.elementFromPoint(${targetX}, ${targetY});
-                  if (el) {
-                    el.focus?.();
-                    if (typeof el.click === 'function' && el.tagName !== 'BODY' && el.tagName !== 'HTML') {
-                      el.click();
-                    }
-                  }
-                })()
-              `
-            });
-          } catch (e) {}
         }
       } else if (input.action === 'up') {
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
@@ -268,7 +327,7 @@ async function handleInputEvent(input) {
           y: targetY,
           button: button,
           buttons: 0,
-          clickCount: 1
+          clickCount: clickTracker.count
         });
       } else if (input.action === 'dblclick') {
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
@@ -300,35 +359,43 @@ async function handleInputEvent(input) {
         deltaY: deltaY
       });
 
-      // Dual-layer DOM scroll fallback
-      try {
-        await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
-          expression: `
-            (() => {
-              const el = document.elementFromPoint(${targetX}, ${targetY});
-              if (el && (el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth)) {
-                el.scrollBy({ left: ${deltaX}, top: ${deltaY}, behavior: 'auto' });
-              } else {
-                window.scrollBy({ left: ${deltaX}, top: ${deltaY}, behavior: 'auto' });
-              }
-            })()
-          `
-        });
-      } catch (e) {}
     } else if (input.type === 'input-key') {
       const isDown = input.action === 'down';
-      await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
-        type: isDown ? 'rawKeyDown' : 'keyUp',
-        key: input.key,
-        code: input.code,
-        windowsVirtualKeyCode: input.keyCode || 0
-      });
+      const key = input.key;
 
-      if (isDown && input.key && input.key.length === 1) {
+      // CDP modifier bitmask: Alt=1, Ctrl=2, Meta/Command=4, Shift=8.
+      // The controller already sends altKey/ctrlKey/shiftKey/metaKey — the
+      // old code dropped them, so Ctrl+C, Ctrl+A, Cmd+V etc. never reached
+      // the host as shortcuts.
+      const modifiers =
+        (input.altKey ? 1 : 0) |
+        (input.ctrlKey ? 2 : 0) |
+        (input.metaKey ? 4 : 0) |
+        (input.shiftKey ? 8 : 0);
+      const isShortcut = !!(input.ctrlKey || input.altKey || input.metaKey);
+
+      if (isDown && key && key.length === 1 && !isShortcut) {
+        // Plain printable character: one keyDown carrying text lets Chrome
+        // synthesise keydown + char together (the previous rawKeyDown + char
+        // pair was two separate round-trips and broke IME/editor handlers).
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
-          type: 'char',
-          text: input.key,
-          unmodifiedText: input.key
+          type: 'keyDown',
+          key,
+          code: input.code || undefined,
+          text: key,
+          unmodifiedText: key,
+          modifiers,
+          windowsVirtualKeyCode: input.keyCode || key.toUpperCase().charCodeAt(0) || 0
+        });
+      } else {
+        // Shortcuts and non-printables must NOT carry text, otherwise
+        // Ctrl+C inserted a literal "c" into the host page instead of copying.
+        await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
+          type: isDown ? 'rawKeyDown' : 'keyUp',
+          key,
+          code: input.code || undefined,
+          modifiers,
+          windowsVirtualKeyCode: input.keyCode || 0
         });
       }
     }
@@ -358,13 +425,17 @@ async function stopHostSession(reason = 'completed') {
     await detachDebugger(sessionState.tabId);
   }
 
-  // Instruct offscreen document to broadcast host-tab-closed and tear down WebRTC peers
+  // Instruct offscreen document to broadcast host-tab-closed and tear down WebRTC peers.
+  // Await a short flush window so the "session-ended" DataChannel message is
+  // actually delivered (RTCDataChannel sends are not instant) before the
+  // offscreen document — and with it the peer connections — is destroyed.
   try {
-    chrome.runtime.sendMessage({
+    await chrome.runtime.sendMessage({
       target: 'offscreen',
       type: 'STOP_SESSION',
       payload: { reason: reason === 'tab-closed' ? 'Host closed the shared tab' : 'Host ended the session' }
     });
+    await new Promise(r => setTimeout(r, 300));
   } catch (e) {}
 
   await closeOffscreenDocument();
@@ -374,6 +445,8 @@ async function stopHostSession(reason = 'completed') {
   sessionState.startTime = null;
   sessionState.pendingRequests = [];
   sessionState.connectedClients = [];
+  persistSession();
+  stopKeepAlive();
   updateExtensionBadge();
 
   // Broadcast termination to open popup if active
@@ -400,6 +473,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
           if (portionSettings) {
             sessionState.portionSettings = portionSettings;
+          }
+          if (typeof message.payload.allowControl === 'boolean') {
+            sessionState.defaultCanControl = message.payload.allowControl;
           }
 
           sessionState.tabId = tabId;
@@ -437,7 +513,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
 
           updateExtensionBadge();
+          startKeepAlive();
           await injectTabOverlay(tabId);
+          persistSession();
           sendResponse({ success: true });
         } catch (err) {
           console.error('Error starting host session:', err);
@@ -452,6 +530,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ...sessionState,
         durationSeconds: sessionState.startTime ? Math.round((Date.now() - sessionState.startTime) / 1000) : 0
       });
+      return true;
+    }
+
+    case 'SET_DEFAULT_CONTROL': {
+      sessionState.defaultCanControl = !!message.value;
+      chrome.storage.local.set({ defaultCanControl: sessionState.defaultCanControl }).catch(() => {});
+      sendResponse({ success: true });
       return true;
     }
 
@@ -490,8 +575,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           iconUrl: 'icons/icon128.png',
           title: 'Remote Access Request',
           message: `${deviceInfo || 'A device'} entered the PIN and requested access. Click extension icon to decide.`,
-          priority: 2
-        });
+          priority: 2,
+          requireInteraction: true
+        }, () => void chrome.runtime.lastError);
       } catch (e) {}
 
       // Broadcast to popup if open
@@ -655,7 +741,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           title: 'Guest Disconnected',
           message: `${devInfo} has left the session (${message.reason || 'closed tab'}).`,
           priority: 1
-        });
+        }, () => void chrome.runtime.lastError);
       } catch (e) {}
 
       updateExtensionBadge();
@@ -678,6 +764,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     }
 
+    case 'SESSION_ERROR': {
+      // The offscreen document failed after the popup already showed "live".
+      // Tear down so the host is never left believing a dead session is live.
+      console.error('Offscreen session error:', message.error);
+      stopHostSession('session-error');
+      chrome.runtime.sendMessage({
+        type: 'SESSION_FAILED',
+        error: message.error || 'Session failed to start'
+      }).catch(() => {});
+      break;
+    }
+
     case 'EXECUTE_INPUT': {
       handleInputEvent(message.input);
       break;
@@ -692,6 +790,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   }
 });
+
+// Restore or clean up on service-worker boot (crash, update, Chrome restart)
+chrome.runtime.onStartup.addListener(recoverSession);
+chrome.runtime.onInstalled.addListener(recoverSession);
+
+async function recoverSession() {
+  try {
+    const { activeSession } = await chrome.storage.session.get(['activeSession']);
+    if (!activeSession || !activeSession.tabId) return;
+    // Does the tab still exist?
+    let tab = null;
+    try {
+      tab = await chrome.tabs.get(activeSession.tabId);
+    } catch (e) {}
+    if (!tab) {
+      // Shared tab is gone: make sure no ghost overlay/badge survives
+      await chrome.storage.session.set({ activeSession: null });
+      chrome.action.setBadgeText({ text: '' });
+      return;
+    }
+    // Tab still open: restore the light-weight state. Media/peer re-establish
+    // on the next START_HOST_SESSION; we only restore the safety signals.
+    sessionState.active = true;
+    sessionState.tabId = activeSession.tabId;
+    sessionState.roomId = activeSession.roomId;
+    sessionState.pin = activeSession.pin;
+    sessionState.tabTitle = activeSession.tabTitle;
+    sessionState.tabUrl = activeSession.tabUrl;
+    sessionState.startTime = activeSession.startTime;
+    sessionState.defaultCanControl = activeSession.defaultCanControl !== false;
+    updateExtensionBadge();
+    startKeepAlive();
+  } catch (e) {
+    console.warn('Session recovery notice:', e);
+  }
+}
 
 // Immediately teardown session and notify guests if host closes the shared tab
 chrome.tabs.onRemoved.addListener((tabId) => {

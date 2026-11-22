@@ -131,7 +131,9 @@
   let lastPinchMidY = 0;
 
   function sanitizePeerId(raw) {
-    return 'spy-' + raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+    // Must stay in sync with extension/offscreen.js — keep word boundaries so
+    // "SPY-4821" and "SPY4821" never resolve to the same PeerJS ID.
+    return 'spy-' + String(raw).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   }
 
   // Parse room and pin from URL
@@ -621,19 +623,27 @@
   }
 
   // --- Mouse Listeners (Desktop) ---
-  let lastMoveTime = 0;
+  // Throttle + coalesce mouse moves to one send per animation frame.
+  // The old 16ms time gate dropped events unpredictably and could queue
+  // hundreds of messages per second on high-poll-rate mice.
+  let pendingMove = null;
+  let moveFrameScheduled = false;
   remoteVideo.addEventListener('mousemove', (e) => {
     if (!canControl) return;
-    const now = performance.now();
-    if (now - lastMoveTime < 16) return;
-    lastMoveTime = now;
-
-    const coords = getCoordinates(e.clientX, e.clientY);
-    sendInput({
-      type: 'input-mouse',
-      action: 'move',
-      x: coords.x,
-      y: coords.y
+    pendingMove = { clientX: e.clientX, clientY: e.clientY };
+    if (moveFrameScheduled) return;
+    moveFrameScheduled = true;
+    requestAnimationFrame(() => {
+      moveFrameScheduled = false;
+      if (!pendingMove || !canControl) return;
+      const coords = getCoordinates(pendingMove.clientX, pendingMove.clientY);
+      pendingMove = null;
+      sendInput({
+        type: 'input-mouse',
+        action: 'move',
+        x: coords.x,
+        y: coords.y
+      });
     });
   });
 
@@ -661,29 +671,27 @@
     });
   });
 
+  // NOTE: no synthetic 'click' here. mousedown/mouseup already produce a
+  // complete native click on the host; sending 'click' as well made every
+  // press execute twice (menus flicker, checkboxes toggle twice, drag breaks).
   remoteVideo.addEventListener('click', (e) => {
     if (!canControl) return;
+    // Only relay "instant" clicks that had no matching down/up pair
+    // (e.g. accessibility tooling); regular physical clicks are covered.
+    if (e.detail !== 0) return;
     const coords = getCoordinates(e.clientX, e.clientY);
     sendInput({
       type: 'input-mouse',
       action: 'click',
-      button: e.button === 2 ? 'right' : (e.button === 1 ? 'middle' : 'left'),
-      x: coords.x,
-      y: coords.y
-    });
-  });
-
-  remoteVideo.addEventListener('dblclick', (e) => {
-    if (!canControl) return;
-    const coords = getCoordinates(e.clientX, e.clientY);
-    sendInput({
-      type: 'input-mouse',
-      action: 'dblclick',
       button: 'left',
       x: coords.x,
       y: coords.y
     });
   });
+
+  // dblclick is intentionally NOT relayed: the two mousedown/mouseup pairs
+  // already generate a double-click natively on the host. Relaying it too
+  // activated links/buttons 2-4x per gesture.
 
   remoteVideo.addEventListener('wheel', (e) => {
     if (!canControl) return;
@@ -1028,28 +1036,42 @@
       action: 'up',
       key: e.key,
       code: e.code,
-      keyCode: e.keyCode
+      keyCode: e.keyCode,
+      altKey: e.altKey,
+      ctrlKey: e.ctrlKey,
+      shiftKey: e.shiftKey,
+      metaKey: e.metaKey
     });
   });
 
   // Mobile Text Send
+  // Map a character to a plausible KeyboardEvent.code + keyCode so host-side
+  // keyboard shortcuts and IME-heavy forms behave like real typing.
+  function charToKeyDescriptor(char) {
+    if (char === ' ') return { code: 'Space', keyCode: 32, shift: false };
+    if (char === '\n') return { code: 'Enter', keyCode: 13, shift: false };
+    if (char === '\t') return { code: 'Tab', keyCode: 9, shift: false };
+    const upper = char.toUpperCase();
+    const isLetter = /^[A-Z]$/.test(upper);
+    const isDigit = /^[0-9]$/.test(char);
+    const shifted = char !== char.toLowerCase() && /^[a-z]$/i.test(char);
+    if (isLetter) return { code: 'Key' + upper, keyCode: upper.charCodeAt(0), shift: shifted };
+    if (isDigit) return { code: 'Digit' + char, keyCode: char.charCodeAt(0), shift: false };
+    return { code: '', keyCode: char.charCodeAt(0), shift: false };
+  }
+
   function sendMobileText(text) {
     if (!text || !canControl) return;
-    for (let char of text) {
-      sendInput({
-        type: 'input-key',
-        action: 'down',
-        key: char,
-        code: 'Key' + char.toUpperCase(),
-        keyCode: char.charCodeAt(0)
-      });
-      sendInput({
-        type: 'input-key',
-        action: 'up',
-        key: char,
-        code: 'Key' + char.toUpperCase(),
-        keyCode: char.charCodeAt(0)
-      });
+    for (const char of Array.from(text)) {
+      const desc = charToKeyDescriptor(char);
+      if (desc.shift) {
+        sendInput({ type: 'input-key', action: 'down', key: 'Shift', code: 'ShiftLeft', keyCode: 16 });
+      }
+      sendInput({ type: 'input-key', action: 'down', key: char, code: desc.code, keyCode: desc.keyCode });
+      sendInput({ type: 'input-key', action: 'up', key: char, code: desc.code, keyCode: desc.keyCode });
+      if (desc.shift) {
+        sendInput({ type: 'input-key', action: 'up', key: 'Shift', code: 'ShiftLeft', keyCode: 16 });
+      }
     }
   }
 

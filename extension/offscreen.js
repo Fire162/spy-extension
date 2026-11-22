@@ -21,7 +21,9 @@ const approvedSessions = new Map();
 const disconnectTimers = new Map();
 
 function sanitizePeerId(raw) {
-  return 'spy-' + raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+  // Keep word boundaries so "SPY-4821" and "SPY4821" cannot collide onto
+  // the same PeerJS ID. Must stay in sync with docs/controller.js.
+  return 'spy-' + String(raw).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
 function notifyClientListUpdate() {
@@ -181,7 +183,7 @@ async function startSession({ streamId, roomId, pin, portionSettings: initialPor
         mandatory: {
           chromeMediaSource: 'tab',
           chromeMediaSourceId: streamId,
-          maxFrameRate: 144,
+          maxFrameRate: 60,
           minWidth: 1280,
           maxWidth: 1920,
           minHeight: 720,
@@ -215,7 +217,7 @@ async function startSession({ streamId, roomId, pin, portionSettings: initialPor
           mandatory: {
             chromeMediaSource: 'tab',
             chromeMediaSourceId: streamId,
-            maxFrameRate: 144,
+            maxFrameRate: 60,
             maxWidth: 1920,
             maxHeight: 1080
           }
@@ -272,7 +274,9 @@ async function startSession({ streamId, roomId, pin, portionSettings: initialPor
         const deviceInfo = data.deviceInfo || 'Remote Device';
 
         // Check for Session Resumption (Auto-reconnect without prompting host)
-        if (data.sessionToken && approvedSessions.has(data.sessionToken)) {
+        const RESUME_TTL_MS = 12 * 60 * 60 * 1000;
+        if (data.sessionToken && approvedSessions.has(data.sessionToken) &&
+            Date.now() - approvedSessions.get(data.sessionToken).issuedAt < RESUME_TTL_MS) {
           const session = approvedSessions.get(data.sessionToken);
           console.log(`Auto-resuming session for approved client: ${session.deviceInfo} (${clientId})`);
 
@@ -383,7 +387,7 @@ async function handlePermissionDecision({ clientId, approved, canControl }) {
 
   if (approved) {
     const isPortion = !canControl && portionSettings.enabled;
-    const sessionToken = 'spy_' + Math.random().toString(36).substring(2, 12) + '_' + Date.now().toString(36);
+    const sessionToken = 'spy_' + (crypto.getRandomValues(new Uint32Array(2)).join('')) + '_' + Date.now().toString(36);
     approvedSessions.set(sessionToken, {
       canControl: !!canControl,
       deviceInfo,
@@ -422,6 +426,7 @@ async function handlePermissionDecision({ clientId, approved, canControl }) {
       call,
       canControl: !!canControl,
       deviceInfo,
+      sessionToken,
       connectedAt: Date.now()
     });
 
@@ -447,6 +452,10 @@ function updateClientRole({ clientId, canControl }) {
   const client = connectedClients.get(clientId);
   if (client) {
     client.canControl = !!canControl;
+    // Keep the stored resumption grant in sync with the live permission
+    if (client.sessionToken && approvedSessions.has(client.sessionToken)) {
+      approvedSessions.get(client.sessionToken).canControl = !!canControl;
+    }
     const isPortion = !client.canControl && portionSettings.enabled;
 
     try {
@@ -477,6 +486,7 @@ function kickClient({ clientId }) {
       client.conn.close();
       if (client.call) client.call.close();
     } catch (e) {}
+    if (client.sessionToken) approvedSessions.delete(client.sessionToken);
     connectedClients.delete(clientId);
     notifyClientListUpdate();
   }

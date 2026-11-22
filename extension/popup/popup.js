@@ -67,6 +67,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   let currentTab = null;
   let timerInterval = null;
+  let defaultCanControl = true;
 
   // --- Tab Navigation ---
   tabActiveBtn.addEventListener('click', () => {
@@ -348,12 +349,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 2. Load History Count
   loadHistoryCount();
 
-  // 3. Load persisted default portion settings if configured
-  chrome.storage.local.get(['defaultPortionSettings'], (res) => {
+  // 3. Load persisted default portion settings & permission preference
+  chrome.storage.local.get(['defaultPortionSettings', 'defaultCanControl'], (res) => {
     if (res && res.defaultPortionSettings) {
       applyPortionSettings(res.defaultPortionSettings);
     }
+    if (res && typeof res.defaultCanControl === 'boolean' && allowControlToggle) {
+      allowControlToggle.checked = res.defaultCanControl;
+      defaultCanControl = res.defaultCanControl;
+    }
   });
+
+  if (allowControlToggle) {
+    allowControlToggle.addEventListener('change', () => {
+      defaultCanControl = allowControlToggle.checked;
+      chrome.runtime.sendMessage({ type: 'SET_DEFAULT_CONTROL', value: defaultCanControl });
+    });
+  }
 
   // 4. Check current session state from background service worker
   chrome.runtime.sendMessage({ type: 'GET_SESSION_STATE' }, (state) => {
@@ -472,6 +484,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   let activePendingRequests = [];
 
+  // Stale approvals are a consent trap: if the host leaves the popup open
+  // and approves an old request minutes later, the original (possibly
+  // long-gone) client gets control. Auto-expire pending cards after 30s.
+  const REQUEST_TTL_MS = 30000;
+  setInterval(() => {
+    const now = Date.now();
+    const fresh = activePendingRequests.filter(r => (now - (r.timestamp || now)) < REQUEST_TTL_MS);
+    if (fresh.length !== activePendingRequests.length) {
+      fresh.forEach(r => decidePermission(r.clientId, false, false));
+      renderPendingRequests(fresh);
+    }
+  }, 5000);
+
   // --- Render Pending Requests Queue ---
   function renderPendingRequests(requests) {
     activePendingRequests = requests || [];
@@ -500,6 +525,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       const timeText = document.createElement('span');
       timeText.style.cssText = 'font-size:10px;color:var(--text-muted);font-family:var(--font-mono)';
       timeText.textContent = 'Knocking...';
+      if (req.timestamp) {
+        const ageSec = Math.max(0, Math.round((Date.now() - req.timestamp) / 1000));
+        timeText.textContent = ageSec < 5 ? 'Knocking...' : `Waiting ${ageSec}s`;
+      }
 
       topRow.appendChild(devName);
       topRow.appendChild(timeText);
@@ -509,11 +538,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       const allowControlBtn = document.createElement('button');
       allowControlBtn.className = 'btn btn-success btn-sm';
-      allowControlBtn.textContent = 'Allow Control';
+      allowControlBtn.textContent = defaultCanControl ? '⚡ Allow Control' : 'Allow Control';
 
       const viewOnlyBtn = document.createElement('button');
       viewOnlyBtn.className = 'btn btn-outline btn-sm';
-      viewOnlyBtn.textContent = 'View Only';
+      viewOnlyBtn.textContent = defaultCanControl ? 'View Only' : '👁️ View Only';
 
       const denyBtn = document.createElement('button');
       denyBtn.className = 'btn btn-danger btn-sm';
@@ -746,6 +775,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (message.type === 'SESSION_TERMINATED') {
       renderState({ active: false });
       loadHistoryCount();
+    } else if (message.type === 'SESSION_FAILED') {
+      renderState({ active: false });
+      alert('Session could not start: ' + (message.error || 'Unknown error'));
     }
   });
 
@@ -804,16 +836,38 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!clientBase.endsWith('/')) clientBase += '/';
     const shareUrl = `${clientBase}#room=${encodeURIComponent(roomId)}&pin=${encodeURIComponent(pin)}`;
 
-    navigator.clipboard.writeText(shareUrl).then(() => {
+    const markCopied = () => {
       copyLinkBtn.textContent = '✅ Link Copied to Clipboard!';
       setTimeout(() => {
         copyLinkBtn.textContent = '📋 Copy Controller Link';
       }, 2500);
-    });
+    };
+    const legacyCopy = () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = shareUrl;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        markCopied();
+      } catch (e) {
+        prompt('Copy this controller link:', shareUrl);
+      }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(shareUrl).then(markCopied).catch(legacyCopy);
+    } else {
+      legacyCopy();
+    }
   });
 
   // Stop Session
   stopSessionBtn.addEventListener('click', () => {
+    const liveCount = document.querySelectorAll('#devicesList .device-card').length;
+    if (liveCount > 0 && !confirm(`End this session for ${liveCount} connected guest${liveCount === 1 ? '' : 's'}?`)) {
+      return;
+    }
     chrome.runtime.sendMessage({ type: 'STOP_HOST_SESSION' }, () => {
       renderState({ active: false });
       loadHistoryCount();
