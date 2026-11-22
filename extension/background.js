@@ -31,6 +31,31 @@ let sessionState = {
   }
 };
 
+// Keep the MV3 service worker alive while a session is active.
+// Without this, Chrome can terminate the worker after ~30s of idle and
+// the offscreen document's EXECUTE_INPUT messages are silently lost.
+// Holding an open message channel is the documented keepalive pattern.
+let keepAlivePort = null;
+
+function startKeepAlive() {
+  if (keepAlivePort) return;
+  try {
+    keepAlivePort = chrome.runtime.connect({ name: 'spy-keepalive' });
+    keepAlivePort.onDisconnect.addListener(() => {
+      keepAlivePort = null;
+      // Reconnect if the session is still meant to be active
+      if (sessionState.active) setTimeout(startKeepAlive, 1000);
+    });
+  } catch (e) {}
+}
+
+function stopKeepAlive() {
+  if (keepAlivePort) {
+    try { keepAlivePort.disconnect(); } catch (e) {}
+    keepAlivePort = null;
+  }
+}
+
 // Check and maintain offscreen document
 async function ensureOffscreenDocument() {
   const existingContexts = await chrome.runtime.getContexts({
@@ -61,6 +86,21 @@ async function attachDebugger(tabId) {
     await chrome.debugger.attach({ tabId }, '1.3');
     console.log(`Debugger attached to tab ${tabId}`);
   } catch (err) {
+    // A previous worker instance may have crashed while attached and left
+    // the tab in a "debugger already attached" state. Detach and retry once.
+    const msg = String((err && err.message) || err || '');
+    if (msg.toLowerCase().includes('already attached')) {
+      try {
+        await chrome.debugger.detach({ tabId });
+        await new Promise(r => setTimeout(r, 250));
+        await chrome.debugger.attach({ tabId }, '1.3');
+        console.log(`Debugger re-attached to tab ${tabId}`);
+        return;
+      } catch (retryErr) {
+        console.error('Failed to re-attach debugger:', retryErr);
+        throw retryErr;
+      }
+    }
     console.error('Failed to attach debugger:', err);
     throw err;
   }
@@ -143,6 +183,25 @@ function updateTabOverlay() {
       clients: sessionState.connectedClients
     }).catch(() => {});
   }
+}
+
+// Persist the minimal session descriptor so that if Chrome restarts the
+// service worker mid-session, we can recover state and tear down cleanly
+// instead of leaving a ghost session (WAIT badge, live stream, dead input).
+async function persistSession() {
+  try {
+    await chrome.storage.session.set({
+      activeSession: sessionState.active ? {
+        tabId: sessionState.tabId,
+        roomId: sessionState.roomId,
+        pin: sessionState.pin,
+        tabTitle: sessionState.tabTitle,
+        tabUrl: sessionState.tabUrl,
+        startTime: sessionState.startTime,
+        defaultCanControl: sessionState.defaultCanControl
+      } : null
+    });
+  } catch (e) {}
 }
 
 // Save completed or terminated session into persistent history
@@ -365,13 +424,17 @@ async function stopHostSession(reason = 'completed') {
     await detachDebugger(sessionState.tabId);
   }
 
-  // Instruct offscreen document to broadcast host-tab-closed and tear down WebRTC peers
+  // Instruct offscreen document to broadcast host-tab-closed and tear down WebRTC peers.
+  // Await a short flush window so the "session-ended" DataChannel message is
+  // actually delivered (RTCDataChannel sends are not instant) before the
+  // offscreen document — and with it the peer connections — is destroyed.
   try {
-    chrome.runtime.sendMessage({
+    await chrome.runtime.sendMessage({
       target: 'offscreen',
       type: 'STOP_SESSION',
       payload: { reason: reason === 'tab-closed' ? 'Host closed the shared tab' : 'Host ended the session' }
     });
+    await new Promise(r => setTimeout(r, 300));
   } catch (e) {}
 
   await closeOffscreenDocument();
@@ -381,6 +444,8 @@ async function stopHostSession(reason = 'completed') {
   sessionState.startTime = null;
   sessionState.pendingRequests = [];
   sessionState.connectedClients = [];
+  persistSession();
+  stopKeepAlive();
   updateExtensionBadge();
 
   // Broadcast termination to open popup if active
@@ -444,7 +509,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
 
           updateExtensionBadge();
+          startKeepAlive();
           await injectTabOverlay(tabId);
+          persistSession();
           sendResponse({ success: true });
         } catch (err) {
           console.error('Error starting host session:', err);
@@ -497,8 +564,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           iconUrl: 'icons/icon128.png',
           title: 'Remote Access Request',
           message: `${deviceInfo || 'A device'} entered the PIN and requested access. Click extension icon to decide.`,
-          priority: 2
-        });
+          priority: 2,
+          requireInteraction: true
+        }, () => void chrome.runtime.lastError);
       } catch (e) {}
 
       // Broadcast to popup if open
@@ -662,7 +730,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           title: 'Guest Disconnected',
           message: `${devInfo} has left the session (${message.reason || 'closed tab'}).`,
           priority: 1
-        });
+        }, () => void chrome.runtime.lastError);
       } catch (e) {}
 
       updateExtensionBadge();
@@ -685,6 +753,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     }
 
+    case 'SESSION_ERROR': {
+      // The offscreen document failed after the popup already showed "live".
+      // Tear down so the host is never left believing a dead session is live.
+      console.error('Offscreen session error:', message.error);
+      stopHostSession('session-error');
+      chrome.runtime.sendMessage({
+        type: 'SESSION_FAILED',
+        error: message.error || 'Session failed to start'
+      }).catch(() => {});
+      break;
+    }
+
     case 'EXECUTE_INPUT': {
       handleInputEvent(message.input);
       break;
@@ -699,6 +779,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   }
 });
+
+// Restore or clean up on service-worker boot (crash, update, Chrome restart)
+chrome.runtime.onStartup.addListener(recoverSession);
+chrome.runtime.onInstalled.addListener(recoverSession);
+
+async function recoverSession() {
+  try {
+    const { activeSession } = await chrome.storage.session.get(['activeSession']);
+    if (!activeSession || !activeSession.tabId) return;
+    // Does the tab still exist?
+    let tab = null;
+    try {
+      tab = await chrome.tabs.get(activeSession.tabId);
+    } catch (e) {}
+    if (!tab) {
+      // Shared tab is gone: make sure no ghost overlay/badge survives
+      await chrome.storage.session.set({ activeSession: null });
+      chrome.action.setBadgeText({ text: '' });
+      return;
+    }
+    // Tab still open: restore the light-weight state. Media/peer re-establish
+    // on the next START_HOST_SESSION; we only restore the safety signals.
+    sessionState.active = true;
+    sessionState.tabId = activeSession.tabId;
+    sessionState.roomId = activeSession.roomId;
+    sessionState.pin = activeSession.pin;
+    sessionState.tabTitle = activeSession.tabTitle;
+    sessionState.tabUrl = activeSession.tabUrl;
+    sessionState.startTime = activeSession.startTime;
+    sessionState.defaultCanControl = activeSession.defaultCanControl !== false;
+    updateExtensionBadge();
+    startKeepAlive();
+  } catch (e) {
+    console.warn('Session recovery notice:', e);
+  }
+}
 
 // Immediately teardown session and notify guests if host closes the shared tab
 chrome.tabs.onRemoved.addListener((tabId) => {
