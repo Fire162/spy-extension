@@ -100,6 +100,18 @@
         <video id="remoteVideo" autoplay playsinline></video>
         <div class="cursor-pointer" id="remoteCursor" style="display: none;"></div>
 
+        <!-- Top-Right Floating Session Badge -->
+        <div id="topRightSessionBadge" class="top-right-session-badge" style="display: none;">
+          <span class="session-dot">🟢</span>
+          <span id="topRightSessionCount">1 Session</span>
+        </div>
+
+        <!-- Reconnection Banner -->
+        <div id="reconnectBanner" class="reconnect-banner" style="display: none;">
+          <span class="reconnect-pulse">🟡</span>
+          <span id="reconnectBannerText">Reconnecting...</span>
+        </div>
+
         <!-- Audio Autoplay Policy Notification (If browser blocked audio before interaction) -->
         <div class="audio-notice" id="audioNotice" style="display: none;">
           <span>🔇 Audio Muted by Browser</span>

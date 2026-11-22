@@ -32,6 +32,10 @@
   const streamWrapper = document.getElementById('streamWrapper');
   const interactionNotice = document.getElementById('interactionNotice');
   const portionBadge = document.getElementById('portionBadge');
+  const reconnectBanner = document.getElementById('reconnectBanner');
+  const reconnectBannerText = document.getElementById('reconnectBannerText');
+  const topRightSessionBadge = document.getElementById('topRightSessionBadge');
+  const topRightSessionCount = document.getElementById('topRightSessionCount');
 
   // Audio Elements
   const audioToggleBtn = document.getElementById('audioToggleBtn');
@@ -77,6 +81,37 @@
   let pingInterval = null;
   let lastPingTimestamp = 0;
   let isMuted = false;
+
+  // Auto-Retry & Session Resumption State
+  let savedRoomId = '';
+  let savedPin = '';
+  let currentSessionToken = null;
+  let isReconnecting = false;
+  let reconnectAttempts = 0;
+  const MAX_RECONNECT_ATTEMPTS = 6;
+  let reconnectTimer = null;
+  let userExplicitlyDisconnected = false;
+
+  function showReconnectBanner(text) {
+    if (reconnectBanner) {
+      if (reconnectBannerText) reconnectBannerText.textContent = text;
+      reconnectBanner.style.display = 'flex';
+    }
+  }
+
+  function hideReconnectBanner() {
+    if (reconnectBanner) {
+      reconnectBanner.style.display = 'none';
+    }
+  }
+
+  function updateSessionsOverlay(count) {
+    if (topRightSessionBadge && topRightSessionCount) {
+      topRightSessionBadge.style.display = 'flex';
+      const label = count === 1 ? 'Session' : 'Sessions';
+      topRightSessionCount.textContent = `${count} ${label}`;
+    }
+  }
 
   // Touch & Pinch-to-Zoom State
   let touchMode = 'tap'; // 'tap' or 'scroll'
@@ -139,8 +174,18 @@
   }
 
   function connectToHost(roomId, pin) {
-    updateStatus('waiting', 'Connecting P2P...');
-    joinErrorMsg.textContent = '';
+    savedRoomId = roomId;
+    savedPin = pin;
+    if (!currentSessionToken) {
+      try {
+        currentSessionToken = sessionStorage.getItem('spy_session_token_' + roomId) || null;
+      } catch (e) {}
+    }
+
+    if (!isReconnecting) {
+      updateStatus('waiting', 'Connecting P2P...');
+      joinErrorMsg.textContent = '';
+    }
     currentRoomId = roomId;
 
     const targetPeerId = sanitizePeerId(roomId);
@@ -158,14 +203,18 @@
     peer.on('open', (id) => {
       console.log('Controller Peer initialized with ID:', id);
       joinModal.style.display = 'none';
-      waitingModal.style.display = 'flex';
-      updateStatus('waiting', 'Reaching host browser...');
+      if (!isReconnecting) {
+        waitingModal.style.display = 'flex';
+        updateStatus('waiting', 'Reaching host browser...');
+      }
 
       conn = peer.connect(targetPeerId, { reliable: true });
 
       conn.on('open', () => {
         console.log('Data connection opened to host:', targetPeerId);
-        updateStatus('waiting', 'Awaiting authorization...');
+        if (!isReconnecting) {
+          updateStatus('waiting', 'Awaiting authorization...');
+        }
         const deviceInfo = detectDeviceInfo();
 
         const sendAuth = (retryCount = 0) => {
@@ -176,9 +225,10 @@
                 type: 'auth',
                 pin: pin.trim(),
                 deviceInfo: deviceInfo,
-                clientId: deviceInfo
+                clientId: deviceInfo,
+                sessionToken: currentSessionToken || undefined
               });
-              console.log('Auth credentials dispatched to host');
+              console.log('Auth credentials dispatched to host (resumption:', !!currentSessionToken, ')');
             } catch (err) {
               console.warn('conn.send auth failed:', err);
               if (retryCount < 10) setTimeout(() => sendAuth(retryCount + 1), 100);
@@ -195,7 +245,10 @@
       });
 
       conn.on('close', () => {
-        handleSessionEnded('Host closed connection.');
+        console.warn('Data connection closed');
+        if (!userExplicitlyDisconnected) {
+          attemptAutoReconnect('Data channel closed');
+        }
       });
 
       conn.on('error', (err) => {
@@ -206,7 +259,9 @@
           console.warn('Ignoring transient NotOpenYet event. Connection will proceed.');
           return;
         }
-        handleSessionEnded('Connection error: ' + errMsg);
+        if (!userExplicitlyDisconnected) {
+          attemptAutoReconnect('Connection error: ' + errMsg);
+        }
       });
     });
 
@@ -223,6 +278,16 @@
         latencyBadge.style.display = 'flex';
         syncScreenModeUI();
         updatePortionDisplay();
+
+        // Successful stream clears reconnect flags
+        isReconnecting = false;
+        reconnectAttempts = 0;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        hideReconnectBanner();
+        updateSessionsOverlay(1);
 
         // Apply low-latency hints to eliminate browser jitter-buffering
         try {
@@ -262,22 +327,85 @@
       });
 
       call.on('close', () => {
-        handleSessionEnded('Live media stream closed.');
+        console.warn('Live media stream closed');
+        if (!userExplicitlyDisconnected) {
+          attemptAutoReconnect('Live stream interrupted');
+        }
       });
     });
 
     peer.on('error', (err) => {
       console.error('Peer error:', err);
       if (err.type === 'peer-unavailable') {
-        joinErrorMsg.textContent = 'Room not found. Make sure host has session active.';
-      } else {
-        joinErrorMsg.textContent = 'Connection error: ' + err.type;
+        if (!isReconnecting) {
+          joinErrorMsg.textContent = 'Room not found. Make sure host has session active.';
+          waitingModal.style.display = 'none';
+          joinModal.style.display = 'flex';
+          updateStatus('', 'Disconnected');
+          cleanupConnection();
+        } else {
+          attemptAutoReconnect('Host unavailable during retry');
+        }
+      } else if (err.type === 'disconnected' || err.type === 'network') {
+        attemptAutoReconnect('Network error: ' + err.type);
       }
-      waitingModal.style.display = 'none';
-      joinModal.style.display = 'flex';
-      updateStatus('', 'Disconnected');
-      cleanupConnection();
     });
+  }
+
+  function attemptAutoReconnect(reason) {
+    if (userExplicitlyDisconnected) return;
+    if (!savedRoomId || !savedPin) {
+      handleSessionEnded(reason || 'Disconnected');
+      return;
+    }
+
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      console.warn('Max reconnection attempts reached');
+      hideReconnectBanner();
+      handleSessionEnded('Connection lost after multiple retry attempts. Click Reconnect below.');
+      return;
+    }
+
+    isReconnecting = true;
+    reconnectAttempts++;
+    const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts - 1), 6000);
+
+    console.log(`Auto-retry attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms... Reason: ${reason}`);
+    showReconnectBanner(`🟡 Connection interrupted. Reconnecting (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+    updateStatus('waiting', 'Reconnecting...');
+
+    cleanupTransientConnection();
+
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => {
+      if (userExplicitlyDisconnected) return;
+      connectToHost(savedRoomId, savedPin);
+    }, delay);
+  }
+
+  function cleanupTransientConnection() {
+    if (pingInterval) {
+      clearInterval(pingInterval);
+      pingInterval = null;
+    }
+    if (conn) {
+      try { conn.close(); } catch (e) {}
+      conn = null;
+    }
+    if (activeCall) {
+      try { activeCall.close(); } catch (e) {}
+      activeCall = null;
+    }
+    if (peer) {
+      try { peer.destroy(); } catch (e) {}
+      peer = null;
+    }
+    if (remoteVideo.srcObject) {
+      try {
+        remoteVideo.srcObject.getTracks().forEach(t => t.stop());
+      } catch (e) {}
+      remoteVideo.srcObject = null;
+    }
   }
 
   function handleIncomingData(data) {
@@ -302,12 +430,19 @@
 
       case 'permission-result':
         waitingModal.style.display = 'none';
+        hideReconnectBanner();
         if (!data.approved) {
           joinModal.style.display = 'flex';
-          joinErrorMsg.textContent = 'Access request was denied by the host.';
+          joinErrorMsg.textContent = data.message || 'Access request was denied by the host.';
           updateStatus('', 'Access Denied');
           cleanupConnection();
         } else {
+          if (data.sessionToken) {
+            currentSessionToken = data.sessionToken;
+            try {
+              sessionStorage.setItem('spy_session_token_' + currentRoomId, data.sessionToken);
+            } catch (e) {}
+          }
           canControl = !!data.canControl;
           currentRoomText.textContent = currentRoomId;
           sessionBadge.style.display = 'flex';
@@ -339,6 +474,12 @@
 
           updateStatus('connected', 'Live P2P');
           startLatencyPing();
+        }
+        break;
+
+      case 'session-stats':
+        if (data.activeClientsCount !== undefined) {
+          updateSessionsOverlay(data.activeClientsCount);
         }
         break;
 
@@ -383,10 +524,14 @@
         break;
 
       case 'host-tab-closed':
+        userExplicitlyDisconnected = true;
+        hideReconnectBanner();
         handleSessionEnded(data.reason || 'Host closed the shared tab. Session has ended.');
         break;
 
       case 'session-ended':
+        userExplicitlyDisconnected = true;
+        hideReconnectBanner();
         handleSessionEnded(data.reason || 'Host ended session');
         break;
     }
@@ -1052,20 +1197,15 @@
 
   // --- Session Cleanup ---
   function cleanupConnection() {
-    if (pingInterval) clearInterval(pingInterval);
-    if (conn) {
-      conn.close();
-      conn = null;
+    cleanupTransientConnection();
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
     }
-    if (activeCall) {
-      activeCall.close();
-      activeCall = null;
-    }
-    if (peer) {
-      peer.destroy();
-      peer = null;
-    }
+    isReconnecting = false;
+    reconnectAttempts = 0;
     currentRoomId = null;
+    currentSessionToken = null;
     canControl = false;
     sessionBadge.style.display = 'none';
     latencyBadge.style.display = 'none';
@@ -1073,6 +1213,8 @@
     disconnectBtn.style.display = 'none';
     fullscreenBtn.style.display = 'none';
     if (screenFitBtn) screenFitBtn.style.display = 'none';
+    if (topRightSessionBadge) topRightSessionBadge.style.display = 'none';
+    hideReconnectBanner();
     audioToggleBtn.style.display = 'none';
     audioNotice.style.display = 'none';
     mobileDock.style.display = 'none';
@@ -1089,10 +1231,6 @@
     remoteVideo.style.transformOrigin = '';
     remoteVideo.style.transition = '';
     resetZoom();
-    if (remoteVideo.srcObject) {
-      remoteVideo.srcObject.getTracks().forEach(t => t.stop());
-      remoteVideo.srcObject = null;
-    }
   }
 
   function handleSessionEnded(reason) {
@@ -1105,14 +1243,16 @@
   // --- UI Event Handlers ---
   joinForm.addEventListener('submit', (e) => {
     e.preventDefault();
-    const room = roomIdInput.value;
-    const pin = pinInput.value;
+    userExplicitlyDisconnected = false;
+    const room = roomIdInput.value.trim();
+    const pin = pinInput.value.trim();
     if (room && pin) {
       connectToHost(room, pin);
     }
   });
 
   document.getElementById('cancelJoinBtn').addEventListener('click', () => {
+    userExplicitlyDisconnected = true;
     cleanupConnection();
     waitingModal.style.display = 'none';
     joinModal.style.display = 'flex';
@@ -1120,6 +1260,8 @@
   });
 
   disconnectBtn.addEventListener('click', () => {
+    userExplicitlyDisconnected = true;
+    hideReconnectBanner();
     if (conn && conn.open) {
       try {
         conn.send({ type: 'session-ended', reason: 'Controller disconnected' });
@@ -1129,8 +1271,24 @@
   });
 
   reconnectBtn.addEventListener('click', () => {
+    userExplicitlyDisconnected = false;
     disconnectNotice.style.display = 'none';
     joinModal.style.display = 'flex';
+  });
+
+  // Resume WebRTC session seamlessly when returning from another app on mobile or tab switch
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && savedRoomId && !userExplicitlyDisconnected) {
+      console.log('Controller returned to foreground. Checking WebRTC connection health...');
+      const connDead = !conn || !conn.open;
+      const callDead = !activeCall || (activeCall.peerConnection && (activeCall.peerConnection.iceConnectionState === 'disconnected' || activeCall.peerConnection.iceConnectionState === 'failed' || activeCall.peerConnection.connectionState === 'disconnected' || activeCall.peerConnection.connectionState === 'failed'));
+      if (connDead || callDead) {
+        console.log('Connection dead after switching apps, immediately triggering reconnect');
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectAttempts = 0;
+        attemptAutoReconnect('Resumed from background');
+      }
+    }
   });
 
   if (screenFitBtn) {

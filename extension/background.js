@@ -120,6 +120,31 @@ function updateExtensionBadge() {
   }
 }
 
+// Inject top-right overlay into the active host tab
+async function injectTabOverlay(tabId) {
+  if (!tabId) return;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['overlay.js']
+    });
+    updateTabOverlay();
+  } catch (err) {
+    console.warn('Could not inject overlay.js (tab may be restricted):', err);
+  }
+}
+
+// Update top-right overlay on the active host tab
+function updateTabOverlay() {
+  if (sessionState.active && sessionState.tabId) {
+    chrome.tabs.sendMessage(sessionState.tabId, {
+      type: 'SPY_OVERLAY_UPDATE',
+      count: sessionState.connectedClients.length,
+      clients: sessionState.connectedClients
+    }).catch(() => {});
+  }
+}
+
 // Save completed or terminated session into persistent history
 async function saveSessionToHistory(session, status = 'completed') {
   if (!session.startTime || !session.roomId) return;
@@ -320,6 +345,9 @@ async function stopHostSession(reason = 'completed') {
 
   if (sessionState.tabId) {
     try {
+      chrome.tabs.sendMessage(sessionState.tabId, { type: 'SPY_OVERLAY_REMOVE' }).catch(() => {});
+    } catch (e) {}
+    try {
       chrome.tabs.sendMessage(sessionState.tabId, { type: 'STOP_PORTION_TRACKER' }).catch(() => {});
     } catch (e) {}
     try {
@@ -409,6 +437,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
 
           updateExtensionBadge();
+          await injectTabOverlay(tabId);
           sendResponse({ success: true });
         } catch (err) {
           console.error('Error starting host session:', err);
@@ -524,6 +553,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'CLIENTS_UPDATED': {
       sessionState.connectedClients = message.clients || [];
       updateExtensionBadge();
+      updateTabOverlay();
       // Broadcast to popup
       chrome.runtime.sendMessage({
         type: 'CLIENTS_UPDATED',
@@ -629,6 +659,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } catch (e) {}
 
       updateExtensionBadge();
+      updateTabOverlay();
       chrome.runtime.sendMessage({
         type: 'PENDING_REQUESTS_UPDATED',
         requests: sessionState.pendingRequests
@@ -681,6 +712,7 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (sessionState.tabId === tabId && changeInfo.status === 'complete') {
     refreshTabDimensions(tabId);
+    injectTabOverlay(tabId);
   }
 });
 
