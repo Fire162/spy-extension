@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * `maxPayload` capped at 64 KB, rooms capped at 50 per host socket, payload shape validated.
   * Host `stop-session` frees the room ID.
 
+### Added
+* **Configurable ICE / TURN relay.** Public STUN-only meant connections across symmetric NATs (mobile carriers, most corporate networks) failed with an unexplained ICE error. The popup now has an "ICE / TURN Relay (optional)" panel (`url|username|credential`, one per line), stored in `chrome.storage.local` and pushed to live sessions. Controllers can also be pointed at a relay from the share link via `?ice=` / `?turn=` (a JSON array or a `url|user|pass` triple).
+* **Multi-controller server rooms.** `server.js` tracked one controller socket per room, so a second guest silently took over the first. Rooms now hold a controller map with independent per-guest permissions, targeted signalling, and per-guest disconnect reporting.
+
 ### Changed
 * Host tab capture is capped at 60 fps (previously requested 144 fps while the sender was tuned for 8 Mbps).
 
