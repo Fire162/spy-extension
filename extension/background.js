@@ -172,6 +172,21 @@ async function saveSessionToHistory(session, status = 'completed') {
   }
 }
 
+// Track successive presses so Chrome can synthesize dblclick/trplclick
+// natively (dblclick requires clickCount:2 — previously every press was 1,
+// so double-click-to-select-word / open-folder never worked on the host).
+const clickTracker = { at: 0, x: 0, y: 0, count: 1 };
+
+function nextClickCount(x, y) {
+  const now = Date.now();
+  const near = Math.abs(x - clickTracker.x) <= 6 && Math.abs(y - clickTracker.y) <= 6;
+  clickTracker.count = (now - clickTracker.at < 500 && near) ? Math.min(clickTracker.count + 1, 3) : 1;
+  clickTracker.at = now;
+  clickTracker.x = x;
+  clickTracker.y = y;
+  return clickTracker.count;
+}
+
 // Zero-delay input dispatch using cached tab dimensions
 async function handleInputEvent(input) {
   if (!sessionState.active || !sessionState.tabId) return;
@@ -225,13 +240,14 @@ async function handleInputEvent(input) {
           y: targetY
         });
 
+        const clickCount = nextClickCount(targetX, targetY);
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
           type: 'mousePressed',
           x: targetX,
           y: targetY,
           button: button,
           buttons: buttonsBit,
-          clickCount: 1
+          clickCount
         });
 
         if (input.action === 'click') {
@@ -241,25 +257,8 @@ async function handleInputEvent(input) {
             y: targetY,
             button: button,
             buttons: 0,
-            clickCount: 1
+            clickCount
           });
-
-          // Dual-layer DOM click trigger
-          try {
-            await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
-              expression: `
-                (() => {
-                  const el = document.elementFromPoint(${targetX}, ${targetY});
-                  if (el) {
-                    el.focus?.();
-                    if (typeof el.click === 'function' && el.tagName !== 'BODY' && el.tagName !== 'HTML') {
-                      el.click();
-                    }
-                  }
-                })()
-              `
-            });
-          } catch (e) {}
         }
       } else if (input.action === 'up') {
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
@@ -268,7 +267,7 @@ async function handleInputEvent(input) {
           y: targetY,
           button: button,
           buttons: 0,
-          clickCount: 1
+          clickCount: clickTracker.count
         });
       } else if (input.action === 'dblclick') {
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
@@ -300,35 +299,43 @@ async function handleInputEvent(input) {
         deltaY: deltaY
       });
 
-      // Dual-layer DOM scroll fallback
-      try {
-        await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
-          expression: `
-            (() => {
-              const el = document.elementFromPoint(${targetX}, ${targetY});
-              if (el && (el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth)) {
-                el.scrollBy({ left: ${deltaX}, top: ${deltaY}, behavior: 'auto' });
-              } else {
-                window.scrollBy({ left: ${deltaX}, top: ${deltaY}, behavior: 'auto' });
-              }
-            })()
-          `
-        });
-      } catch (e) {}
     } else if (input.type === 'input-key') {
       const isDown = input.action === 'down';
-      await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
-        type: isDown ? 'rawKeyDown' : 'keyUp',
-        key: input.key,
-        code: input.code,
-        windowsVirtualKeyCode: input.keyCode || 0
-      });
+      const key = input.key;
 
-      if (isDown && input.key && input.key.length === 1) {
+      // CDP modifier bitmask: Alt=1, Ctrl=2, Meta/Command=4, Shift=8.
+      // The controller already sends altKey/ctrlKey/shiftKey/metaKey — the
+      // old code dropped them, so Ctrl+C, Ctrl+A, Cmd+V etc. never reached
+      // the host as shortcuts.
+      const modifiers =
+        (input.altKey ? 1 : 0) |
+        (input.ctrlKey ? 2 : 0) |
+        (input.metaKey ? 4 : 0) |
+        (input.shiftKey ? 8 : 0);
+      const isShortcut = !!(input.ctrlKey || input.altKey || input.metaKey);
+
+      if (isDown && key && key.length === 1 && !isShortcut) {
+        // Plain printable character: one keyDown carrying text lets Chrome
+        // synthesise keydown + char together (the previous rawKeyDown + char
+        // pair was two separate round-trips and broke IME/editor handlers).
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
-          type: 'char',
-          text: input.key,
-          unmodifiedText: input.key
+          type: 'keyDown',
+          key,
+          code: input.code || undefined,
+          text: key,
+          unmodifiedText: key,
+          modifiers,
+          windowsVirtualKeyCode: input.keyCode || key.toUpperCase().charCodeAt(0) || 0
+        });
+      } else {
+        // Shortcuts and non-printables must NOT carry text, otherwise
+        // Ctrl+C inserted a literal "c" into the host page instead of copying.
+        await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
+          type: isDown ? 'rawKeyDown' : 'keyUp',
+          key,
+          code: input.code || undefined,
+          modifiers,
+          windowsVirtualKeyCode: input.keyCode || 0
         });
       }
     }
