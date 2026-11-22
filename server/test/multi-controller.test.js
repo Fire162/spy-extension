@@ -47,7 +47,7 @@ function makeClient(url) {
   };
 }
 
-const p = spawn("node", ["server.js"], {cwd: "/home/user/repo/server", env: {...process.env, PORT: "3998"}});
+const p = spawn("node", ["server.js"], {cwd: path.resolve(__dirname, ".."), env: {...process.env, PORT: "3998"}});
 p.stderr.on("data", d => console.error("SRV-ERR", String(d).trim()));
 
 let pass = 0, fail = 0;
