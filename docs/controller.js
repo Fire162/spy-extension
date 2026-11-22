@@ -136,6 +136,38 @@
     return 'spy-' + String(raw).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   }
 
+  // Default public STUN; overridable via ?ice= or ?turn= URL params so a
+  // self-hosted relay can be used without redeploying the client.
+  const DEFAULT_ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ];
+
+  function parseIceServers() {
+    const hashStr = window.location.hash.startsWith('#') ? window.location.hash.substring(1) : window.location.hash;
+    const params = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(hashStr);
+    const raw = params.get('ice') || params.get('turn') || hashParams.get('ice') || hashParams.get('turn');
+    if (!raw) return null;
+    try {
+      const decoded = decodeURIComponent(raw);
+      // Either a JSON array of RTCIceServer objects, or url|username|credential
+      if (decoded.trim().startsWith('[')) {
+        const parsed = JSON.parse(decoded);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        return null;
+      }
+      const [urls, username, credential] = decoded.split('|');
+      if (!urls) return null;
+      return [{ urls, ...(username ? { username } : {}), ...(credential ? { credential } : {}) }];
+    } catch (e) {
+      console.warn('Ignoring malformed ?ice= parameter:', e);
+      return null;
+    }
+  }
+
+  const customIceServers = parseIceServers();
+
   // Parse room and pin from URL
   function parseUrlParams() {
     let params = new URLSearchParams(window.location.search);
@@ -194,12 +226,7 @@
 
     peer = new Peer({
       debug: 1,
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ]
-      }
+      config: { iceServers: customIceServers || DEFAULT_ICE_SERVERS }
     });
 
     peer.on('open', (id) => {

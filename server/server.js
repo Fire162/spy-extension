@@ -56,7 +56,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
-// Rooms state: roomId -> { hostWs, controllerWs, pin, permissions, createdAt }
+// Rooms state: roomId -> { hostWs, controllers: Map<ws, {ws, id, canControl, joinedAt}>, pin, createdAt }
 const rooms = new Map();
 
 // WebSocket Server for WebRTC Signaling
@@ -115,8 +115,10 @@ wss.on('connection', (ws) => {
 
         // Clean up any stale room with same ID
         if (rooms.has(roomId)) {
-          const old = rooms.get(roomId);
-          if (old.controllerWs) safeSend(old.controllerWs, { type: 'host-disconnected' });
+          const stale = rooms.get(roomId);
+          for (const controller of stale.controllers.values()) {
+            safeSend(controller.ws, { type: 'host-disconnected', message: 'Host restarted the room' });
+          }
         }
 
         // Cap concurrent rooms per host socket so one client cannot
@@ -129,9 +131,8 @@ wss.on('connection', (ws) => {
 
         rooms.set(roomId, {
           hostWs: ws,
-          controllerWs: null,
+          controllers: new Map(), // ws -> { id, canControl, joinedAt }
           pin: String(pin),
-          permissions: null,
           createdAt: Date.now()
         });
 
@@ -162,15 +163,18 @@ wss.on('connection', (ws) => {
           return safeSend(ws, { type: 'error', code: 'INVALID_PIN', message: 'Incorrect room PIN' });
         }
 
-        room.controllerWs = ws;
-        ws.roomData = { roomId, role: 'controller' };
-        log(`Controller joining room: ${roomId}`);
+        // Many controllers per room: keyed by socket so each carries its own
+        // permission and is addressed independently for signalling.
+        const clientId = typeof msg.clientId === 'string' && msg.clientId.trim()
+          ? msg.clientId.trim().slice(0, 64)
+          : `controller-${room.controllers.size + 1}`;
+
+        room.controllers.set(ws, { ws, id: clientId, canControl: false, joinedAt: Date.now() });
+        ws.roomData = { roomId, role: 'controller', clientId };
+        log(`Controller joining room: ${roomId} as ${clientId} (${room.controllers.size} total)`);
 
         // Notify Host that a remote user is requesting mutual permission
-        safeSend(room.hostWs, {
-          type: 'permission-request',
-          clientId: msg.clientId || 'Remote Controller'
-        });
+        safeSend(room.hostWs, { type: 'permission-request', clientId });
 
         safeSend(ws, {
           type: 'join-status',
@@ -181,26 +185,37 @@ wss.on('connection', (ws) => {
       }
 
       case 'permission-response': {
-        // Host approves or denies control
+        // Host approves or denies one specific controller. clientId is only
+        // optional while a single guest is connected.
         if (!ws.roomData || ws.roomData.role !== 'host') return;
         const room = rooms.get(ws.roomData.roomId);
-        if (!room || !room.controllerWs) return;
+        if (!room) return;
 
         const { approved, canControl } = msg;
-        room.permissions = { approved: !!approved, canControl: !!canControl };
+        let target = null;
+        for (const entry of room.controllers.values()) {
+          if (!msg.clientId || entry.id === msg.clientId) { target = entry; break; }
+        }
+        if (!target) {
+          return safeSend(ws, { type: 'error', message: 'Unknown controller' });
+        }
 
-        log(`Host permission decision for room ${ws.roomData.roomId}: approved=${approved}, canControl=${canControl}`);
+        target.canControl = !!approved && !!canControl;
 
-        safeSend(room.controllerWs, {
+        log(`Host decision for room ${ws.roomData.roomId} -> ${target.id}: approved=${!!approved}, canControl=${target.canControl}`);
+
+        safeSend(target.ws, {
           type: 'permission-result',
+          clientId: target.id,
           approved: !!approved,
-          canControl: !!canControl
+          canControl: target.canControl
         });
 
         safeSend(ws, {
           type: 'session-status',
+          clientId: target.id,
           status: approved ? 'connected' : 'idle',
-          canControl: !!canControl
+          canControl: target.canControl
         });
         break;
       }
@@ -211,10 +226,19 @@ wss.on('connection', (ws) => {
         const room = rooms.get(ws.roomData.roomId);
         if (!room) return;
 
-        const targetWs = ws.roomData.role === 'host' ? room.controllerWs : room.hostWs;
+        let targetWs = null;
+        if (ws.roomData.role === 'host') {
+          // Host must name the controller when several are connected
+          for (const entry of room.controllers.values()) {
+            if (!msg.clientId || entry.id === msg.clientId) { targetWs = entry.ws; break; }
+          }
+        } else {
+          targetWs = room.hostWs;
+        }
         if (targetWs) {
           safeSend(targetWs, {
             type: 'signal',
+            from: ws.roomData.role === 'controller' ? ws.roomData.clientId : 'host',
             data: msg.data
           });
         }
@@ -227,8 +251,10 @@ wss.on('connection', (ws) => {
         if (!room) return;
 
         log(`Session stopped for room ${ws.roomData.roomId} by ${ws.roomData.role}`);
-        if (room.controllerWs) {
-          safeSend(room.controllerWs, { type: 'session-ended', reason: ws.roomData.role === 'host' ? 'Host terminated session' : 'Session closed' });
+        for (const controller of room.controllers.values()) {
+          if (controller.ws !== ws) {
+            safeSend(controller.ws, { type: 'session-ended', reason: ws.roomData.role === 'host' ? 'Host terminated session' : 'Session closed' });
+          }
         }
         if (room.hostWs && room.hostWs !== ws) {
           safeSend(room.hostWs, { type: 'session-ended', reason: 'Session closed' });
@@ -255,16 +281,21 @@ wss.on('connection', (ws) => {
     if (room) {
       if (role === 'host') {
         log(`Host disconnected from room ${roomId}`);
-        if (room.controllerWs) {
-          safeSend(room.controllerWs, { type: 'host-disconnected', message: 'Host left the session' });
+        for (const controller of room.controllers.values()) {
+          safeSend(controller.ws, { type: 'host-disconnected', message: 'Host left the session' });
         }
         rooms.delete(roomId);
       } else if (role === 'controller') {
-        log(`Controller disconnected from room ${roomId}`);
+        const entry = room.controllers.get(ws);
+        room.controllers.delete(ws);
+        log(`Controller ${entry ? entry.id : ws.roomData.clientId} disconnected from room ${roomId} (${room.controllers.size} remaining)`);
         if (room.hostWs) {
-          safeSend(room.hostWs, { type: 'controller-disconnected', message: 'Controller disconnected' });
+          safeSend(room.hostWs, {
+            type: 'controller-disconnected',
+            clientId: entry ? entry.id : ws.roomData.clientId,
+            remaining: room.controllers.size
+          });
         }
-        room.controllerWs = null;
       }
     }
   });

@@ -20,6 +20,32 @@ const approvedSessions = new Map();
 // Grace period timers for temporary network/ICE disconnects: clientId -> timer
 const disconnectTimers = new Map();
 
+// Default public STUN. Users behind symmetric NAT can add TURN servers via
+// the popup (Settings > ICE Servers) - without a relay those connections
+// simply fail with ICE "failed" and no actionable error.
+const DEFAULT_ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' }
+];
+
+// Stored ICE config: array of { urls, username?, credential? }
+let iceServers = DEFAULT_ICE_SERVERS.slice();
+
+function setIceServers(servers) {
+  if (!Array.isArray(servers) || servers.length === 0) {
+    iceServers = DEFAULT_ICE_SERVERS.slice();
+    return;
+  }
+  iceServers = servers
+    .filter(s => s && typeof s.urls === 'string' && s.urls.trim().length > 0)
+    .map(s => ({
+      urls: s.urls.trim(),
+      ...(s.username ? { username: s.username } : {}),
+      ...(s.credential ? { credential: s.credential } : {})
+    }));
+  if (iceServers.length === 0) iceServers = DEFAULT_ICE_SERVERS.slice();
+}
+
 function sanitizePeerId(raw) {
   // Keep word boundaries so "SPY-4821" and "SPY4821" cannot collide onto
   // the same PeerJS ID. Must stay in sync with docs/controller.js.
@@ -146,6 +172,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true });
       break;
 
+    case 'UPDATE_ICE_SERVERS':
+      setIceServers(message.payload);
+      sendResponse({ success: true });
+      break;
+
     case 'KICK_CLIENT':
       kickClient(message.payload);
       sendResponse({ success: true });
@@ -159,9 +190,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-async function startSession({ streamId, roomId, pin, portionSettings: initialPortion }) {
+async function startSession({ streamId, roomId, pin, portionSettings: initialPortion, iceServers: initialIce }) {
   // Always perform full teardown of any previous session first
   stopSession();
+
+  // ICE servers: explicit payload > persisted setting > public STUN defaults
+  if (Array.isArray(initialIce) && initialIce.length > 0) {
+    setIceServers(initialIce);
+  } else {
+    try {
+      const stored = await chrome.storage.local.get(['iceServers']);
+      setIceServers(stored && stored.iceServers ? stored.iceServers : null);
+    } catch (e) {
+      setIceServers(null);
+    }
+  }
 
   if (initialPortion) {
     portionSettings = { ...portionSettings, ...initialPortion };
@@ -238,14 +281,10 @@ async function startSession({ streamId, roomId, pin, portionSettings: initialPor
   const hostPeerId = sanitizePeerId(roomId);
   console.log('Initializing multi-peer host with ID:', hostPeerId);
 
+  console.log('Host peer ICE servers:', iceServers.map(s => s.urls).join(', '));
   peer = new Peer(hostPeerId, {
     debug: 1,
-    config: {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-      ]
-    }
+    config: { iceServers }
   });
 
   peer.on('open', (id) => {
