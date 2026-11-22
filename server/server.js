@@ -22,10 +22,13 @@ const server = http.createServer((req, res) => {
   let reqPath = req.url.split('?')[0];
   if (reqPath === '/' || reqPath === '') reqPath = '/index.html';
 
-  const filePath = path.join(PUBLIC_DIR, reqPath);
-  
-  // Security check: prevent path traversal
-  if (!filePath.startsWith(PUBLIC_DIR)) {
+  const filePath = path.normalize(path.join(PUBLIC_DIR, reqPath));
+
+  // Security check: prevent path traversal. Use a separator-aware prefix
+  // check — a naive startsWith() also accepts sibling dirs such as
+  // "<PUBLIC_DIR>-backup", and path traversal via ../ must be normalised
+  // before the check (it was checked after join, but without normalize).
+  if (filePath !== PUBLIC_DIR && !filePath.startsWith(PUBLIC_DIR + path.sep)) {
     res.writeHead(403, { 'Content-Type': 'text/plain' });
     res.end('403 Forbidden');
     return;
@@ -57,7 +60,7 @@ const server = http.createServer((req, res) => {
 const rooms = new Map();
 
 // WebSocket Server for WebRTC Signaling
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, maxPayload: 64 * 1024 });
 
 function log(msg) {
   const ts = new Date().toISOString();
@@ -68,6 +71,20 @@ function safeSend(ws, payload) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(payload));
   }
+}
+
+// Simple per-socket sliding-window rate limit for PIN attempts. The PIN is
+// only 4 digits (10k combinations); without a cap a single socket can brute
+// force a room in under a minute.
+const JOIN_WINDOW_MS = 60_000;
+const JOIN_MAX_ATTEMPTS = 8;
+
+function joinRateLimited(ws) {
+  const now = Date.now();
+  ws.joinAttempts = (ws.joinAttempts || []).filter(t => now - t < JOIN_WINDOW_MS);
+  if (ws.joinAttempts.length >= JOIN_MAX_ATTEMPTS) return true;
+  ws.joinAttempts.push(now);
+  return false;
 }
 
 wss.on('connection', (ws) => {
@@ -85,6 +102,9 @@ wss.on('connection', (ws) => {
     } catch (e) {
       return safeSend(ws, { type: 'error', message: 'Invalid JSON payload' });
     }
+    if (!msg || typeof msg !== 'object' || typeof msg.type !== 'string') {
+      return safeSend(ws, { type: 'error', message: 'Invalid payload shape' });
+    }
 
     switch (msg.type) {
       case 'create-room': {
@@ -97,6 +117,14 @@ wss.on('connection', (ws) => {
         if (rooms.has(roomId)) {
           const old = rooms.get(roomId);
           if (old.controllerWs) safeSend(old.controllerWs, { type: 'host-disconnected' });
+        }
+
+        // Cap concurrent rooms per host socket so one client cannot
+        // exhaust memory by opening thousands of rooms.
+        let ownedRooms = 0;
+        for (const r of rooms.values()) if (r.hostWs === ws) ownedRooms++;
+        if (ownedRooms >= 50) {
+          return safeSend(ws, { type: 'error', message: 'Too many rooms open' });
         }
 
         rooms.set(roomId, {
@@ -114,14 +142,23 @@ wss.on('connection', (ws) => {
       }
 
       case 'join-room': {
+        if (joinRateLimited(ws)) {
+          return safeSend(ws, { type: 'error', code: 'RATE_LIMITED', message: 'Too many attempts, try again later' });
+        }
         const { roomId, pin } = msg;
+        if (typeof roomId !== 'string' || roomId.length > 64) {
+          return safeSend(ws, { type: 'error', message: 'Invalid room ID' });
+        }
         const room = rooms.get(roomId);
 
         if (!room) {
           return safeSend(ws, { type: 'error', code: 'ROOM_NOT_FOUND', message: 'Room not found or host is offline' });
         }
 
-        if (String(room.pin) !== String(pin)) {
+        // Normalise before compare so numeric and string PINs both work;
+        // also avoids the classic `if (!pin)` rejection of pin 0.
+        const pinStr = String(pin == null ? '' : pin).trim();
+        if (pinStr.length === 0 || pinStr !== String(room.pin)) {
           return safeSend(ws, { type: 'error', code: 'INVALID_PIN', message: 'Incorrect room PIN' });
         }
 
@@ -191,10 +228,16 @@ wss.on('connection', (ws) => {
 
         log(`Session stopped for room ${ws.roomData.roomId} by ${ws.roomData.role}`);
         if (room.controllerWs) {
-          safeSend(room.controllerWs, { type: 'session-ended', reason: 'Host terminated session' });
+          safeSend(room.controllerWs, { type: 'session-ended', reason: ws.roomData.role === 'host' ? 'Host terminated session' : 'Session closed' });
         }
-        if (room.hostWs) {
+        if (room.hostWs && room.hostWs !== ws) {
           safeSend(room.hostWs, { type: 'session-ended', reason: 'Session closed' });
+        }
+        // Host stopping a room should free the ID so it can be reused and
+        // stale room state (including the PIN) does not linger.
+        if (ws.roomData.role === 'host') {
+          rooms.delete(ws.roomData.roomId);
+          ws.roomData = null;
         }
         break;
       }
