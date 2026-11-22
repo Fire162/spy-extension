@@ -16,6 +16,7 @@ let sessionState = {
   pin: null,
   serverUrl: null,
   startTime: null,
+  defaultCanControl: true,
   tabTitle: '',
   tabUrl: '',
   pendingRequests: [], // array of { clientId, deviceInfo, timestamp }
@@ -473,6 +474,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if (portionSettings) {
             sessionState.portionSettings = portionSettings;
           }
+          if (typeof message.payload.allowControl === 'boolean') {
+            sessionState.defaultCanControl = message.payload.allowControl;
+          }
 
           sessionState.tabId = tabId;
           sessionState.tabTitle = tab.title || 'Untitled Tab';
@@ -526,6 +530,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ...sessionState,
         durationSeconds: sessionState.startTime ? Math.round((Date.now() - sessionState.startTime) / 1000) : 0
       });
+      return true;
+    }
+
+    case 'SET_DEFAULT_CONTROL': {
+      sessionState.defaultCanControl = !!message.value;
+      chrome.storage.local.set({ defaultCanControl: sessionState.defaultCanControl }).catch(() => {});
+      sendResponse({ success: true });
       return true;
     }
 
